@@ -1,0 +1,9 @@
+{
+  "name": "QSTEEL Logistics",
+  "short_name": "QSTEEL",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1220",
+  "theme_color": "#0b1220",
+  "icons": []
+}

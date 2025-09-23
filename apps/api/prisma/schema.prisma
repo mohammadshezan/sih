@@ -1,0 +1,189 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  role      Role
+  createdAt DateTime @default(now())
+}
+
+enum Role {
+  admin
+  manager
+  yard
+}
+
+model Plant {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  yards Yard[]
+  routes Route[]
+}
+
+model Yard {
+  id      Int    @id @default(autoincrement())
+  name    String
+  lat     Float
+  lng     Float
+  plant   Plant  @relation(fields: [plantId], references: [id])
+  plantId Int
+  rakes   Rake[]
+}
+
+model Rake {
+  id        Int       @id @default(autoincrement())
+  code      String    @unique
+  rfid      String?   @unique
+  yard      Yard?     @relation(fields: [yardId], references: [id])
+  yardId    Int?
+  wagons    Wagon[]
+  dispatch  Dispatch?
+  status    RakeStatus @default(PENDING)
+}
+
+enum RakeStatus {
+  PENDING
+  DISPATCHED
+}
+
+model Wagon {
+  id     Int   @id @default(autoincrement())
+  code   String @unique
+  rake   Rake? @relation(fields: [rakeId], references: [id])
+  rakeId Int?
+  type   String @default("general")
+  capT   Int    @default(60)
+}
+
+model Dispatch {
+  id       Int      @id @default(autoincrement())
+  rake     Rake     @relation(fields: [rakeId], references: [id])
+  rakeId   Int      @unique
+  from     String
+  to       String
+  cargo    String
+  tonnage  Int
+  ts       DateTime @default(now())
+  hash     String
+  prevHash String
+}
+
+// Routing models for plant-specific routes
+model Station {
+  id             Int             @id @default(autoincrement())
+  code           String          @unique
+  name           String
+  lat            Float
+  lng            Float
+  fromRoutes     Route[]         @relation("FromStation")
+  toRoutes       Route[]         @relation("ToStation")
+  routeStations  RouteStation[]
+}
+
+model Route {
+  id            Int             @id @default(autoincrement())
+  key           String          @unique
+  name          String
+  from          Station?        @relation("FromStation", fields: [fromId], references: [id])
+  fromId        Int?
+  to            Station?        @relation("ToStation", fields: [toId], references: [id])
+  toId          Int?
+  routeStations RouteStation[]
+  plant         Plant?          @relation(fields: [plantId], references: [id])
+  plantId       Int?
+}
+
+model RouteStation {
+  id        Int     @id @default(autoincrement())
+  route     Route   @relation(fields: [routeId], references: [id])
+  routeId   Int
+  station   Station @relation(fields: [stationId], references: [id])
+  stationId Int
+  seq       Int
+
+  @@unique([routeId, seq])
+  @@index([routeId, seq])
+}
+
+// ------------------------------
+// Customer & Orders (for portal)
+// ------------------------------
+
+model Customer {
+  customerId   String    @id @default(uuid())
+  name         String
+  company      String
+  email        String    @unique
+  phone        String
+  gstin        String?
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  orders       Order[]
+  authLogs     AuthLog[]
+}
+
+enum Priority {
+  Normal
+  Urgent
+}
+
+enum OrderStatus {
+  PENDING
+  APPROVED
+  LOADING
+  EN_ROUTE
+  DELIVERED
+  REJECTED
+}
+
+model Order {
+  orderId       String       @id @default(uuid())
+  customer      Customer     @relation(fields: [customerId], references: [customerId])
+  customerId    String
+  cargo         String
+  quantityTons  Int
+  sourcePlant   String
+  destination   String
+  priority      Priority     @default(Normal)
+  status        OrderStatus  @default(PENDING)
+  createdAt     DateTime     @default(now())
+  estimateCost  Int?
+  eta           DateTime?
+  rakeId        String?
+  history       Json?
+}
+
+enum LoginType {
+  password
+  otp
+}
+
+model AuthLog {
+  id          Int        @id @default(autoincrement())
+  customer    Customer   @relation(fields: [customerId], references: [customerId])
+  customerId  String
+  loginType   LoginType
+  timestamp   DateTime   @default(now())
+}
+
+enum LoadingStatus {
+  UNDER_LOADING
+  READY
+  DISPATCHED
+}
+
+model YardActivity {
+  id            Int           @id @default(autoincrement())
+  rakeId        String
+  orderId       String?
+  loadingStatus LoadingStatus @default(UNDER_LOADING)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}

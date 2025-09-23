@@ -1,0 +1,17 @@
+{
+  "name": "qsteel",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "npm run -w apps/web dev",
+    "dev:all": "npm run -w apps/api dev & npm run -w apps/web dev",
+    "build": "npm run -w apps/web build && npm run -w apps/api build",
+    "start": "npm run -w apps/api start",
+    "start:all": "npm run -w apps/api start & npm run -w apps/web start",
+    "postinstall": "npm -w apps/web run postinstall || true"
+  }
+}

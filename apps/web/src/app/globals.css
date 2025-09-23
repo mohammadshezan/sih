@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #0b1220;
+  --foreground: #e5e7eb;
+}
+
+html, body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.leaflet-container { background: #0b1220; }
+.pulse-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #10B981; box-shadow: 0 0 0 rgba(16,185,129, 0.7);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16,185,129, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(16,185,129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16,185,129, 0); }
+}
+
+/* Subtle glow/float animation for KPI cards */
+.kpi-card {
+  transition: transform 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
+  animation: kpiGlow 4s ease-in-out infinite;
+}
+.kpi-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(16,185,129,0.15); }
+@keyframes kpiGlow {
+  0% { box-shadow: 0 0 0 rgba(16,185,129,0.0); background-color: rgba(255,255,255,0.03); }
+  50% { box-shadow: 0 0 20px rgba(16,185,129,0.12); background-color: rgba(255,255,255,0.05); }
+  100% { box-shadow: 0 0 0 rgba(16,185,129,0.0); background-color: rgba(255,255,255,0.03); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kpi-card { animation: none !important; }
+}
