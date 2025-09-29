@@ -345,7 +345,10 @@ export default function ProductionAlignmentPage(){
       <div className="rounded-xl bg-white/5 p-4 border border-white/10">
         <h3 className="font-medium mb-2">Recommendations</h3>
         <ul className="list-disc ml-6 text-sm text-gray-200 space-y-1">
-          {data.recommendations.map((r:string, i:number)=> <li key={i}>{r}</li>)}
+          {Array.isArray(data.recommendations) && data.recommendations.length > 0
+            ? data.recommendations.map((r:string, i:number)=> <li key={i}>{r}</li>)
+            : <li className="text-gray-400 list-none">No recommendations at this time.</li>
+          }
         </ul>
       </div>
 
