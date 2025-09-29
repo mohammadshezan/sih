@@ -60,14 +60,18 @@ export default function Nav() {
               {role==='manager' && (
                 <>
                   <Link href="/manager/approvals">Approvals</Link>
+                  <Link href="/map">Map</Link>
                   <Link href="/optimizer">Optimizer</Link>
+                  <Link href="/dispatch-planner">Planner</Link>
                   <Link href="/manager/simulator">Simulator</Link>
                   <Link href="/reports">Reports</Link>
+                  <Link href="/reports/production-alignment">Alignment</Link>
                 </>
               )}
               {role==='yard' && (
                 <>
                   <Link href="/yard-actions">Yard</Link>
+                  <Link href="/map">Map</Link>
                   <Link href="/yard/wagon-health">Wagon Health</Link>
                   <Link href="/yard/safety">Safety</Link>
                 </>
@@ -75,6 +79,8 @@ export default function Nav() {
               {role==='admin' && (
                 <>
                   <Link href="/ledger">Ledger</Link>
+                  <Link href="/map">Map</Link>
+                  <Link href="/admin/constraints">Constraints</Link>
                   <Link href="/admin/rbac">RBAC</Link>
                   <Link href="/admin/integrations">Integrations</Link>
                   <Link href="/admin/audit-reports">Audit</Link>

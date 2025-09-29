@@ -1,4 +1,8 @@
-import 'dotenv/config';
+// Load environment variables from .env and .env.local (local overrides)
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true });
 import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -29,15 +33,25 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
   .map(s => s.trim())
   .filter(Boolean);
 const allowAll = CORS_ORIGINS.length === 0 && process.env.NODE_ENV !== 'production';
+const prodNoOrigins = CORS_ORIGINS.length === 0 && process.env.NODE_ENV === 'production';
+if (prodNoOrigins) {
+  console.warn('CORS_ORIGINS is not set in production; temporarily allowing all origins (no credentials). Set CORS_ORIGINS to lock down.');
+}
 const corsOptions = {
-  origin: allowAll ? '*' : CORS_ORIGINS,
+  origin: (allowAll || prodNoOrigins) ? '*' : CORS_ORIGINS,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization'],
   // Only enable credentials when specific origins are configured; '*' with credentials is invalid in browsers
-  credentials: !allowAll,
+  credentials: !(allowAll || prodNoOrigins),
 };
 const io = new SocketIOServer(httpServer, {
   cors: corsOptions,
+});
+
+// Namespace for alignment dashboard realtime push
+const alignmentNS = io.of('/ws/alignment');
+alignmentNS.on('connection', socket => {
+  socket.emit('hello', { message: 'Connected to alignment stream' });
 });
 
 app.set('trust proxy', 1);
@@ -55,6 +69,14 @@ app.use(express.json({ limit: '1mb' }));
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 300 });
 app.use('/auth', authLimiter);
 app.use(morgan('dev'));
+
+// Startup diagnostics: SMTP configuration
+const SMTP_CONFIG_MISSING = !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS;
+if (SMTP_CONFIG_MISSING) {
+  console.warn('[QSTEEL][SMTP] Email delivery is DISABLED. Missing SMTP_HOST/SMTP_USER/SMTP_PASS. Set them in apps/api/.env.local');
+} else {
+  console.log('[QSTEEL][SMTP] Email delivery is ENABLED. From:', process.env.SMTP_FROM || process.env.SMTP_USER);
+}
 
 const JWT_SECRET = process.env.JWT_SECRET || 'devsecret';
 if (process.env.NODE_ENV === 'production' && JWT_SECRET === 'devsecret') {
@@ -303,14 +325,14 @@ const MOCK_DATA = {
 const users = [
   { id: 1, email: 'admin@sail.test', role: 'admin' },
   { id: 2, email: 'manager@sail.test', role: 'manager' },
-  { id: 3, email: 'yard@sail.test', role: 'yard' }
+  { id: 3, email: 'yard@sail.test', role: 'yard' },
+ 
 ];
 // OTP recipient overrides (send OTP to these real inboxes for given usernames)
 const OTP_RECIPIENT_MAP = {
   'admin@sail.test': 'head.qsteel@gmail.com',
-  'manager@sail.test': 'shivam.kumar.it27@heritageit.edu.in',
-  'yard@sail.test': 'abhishek.kumar.it27@heritageit.edu.in',
-  // Add customer mappings later as needed
+  'manager@sail.test': 'mohammadshezanekram@gmail.com',
+  'yard@sail.test': 'khalifa182005@gmail.com'
 };
 // Allow customer email pattern for demo
 function resolveUserByEmail(email) {
@@ -336,13 +358,26 @@ function appendLedger(entry, tsOverride) {
   return block;
 }
 
+// Helper: demo alias email normalization and validation
+const DEMO_ALIAS_MAP = { };
+function normalizeDemoEmail(rawEmail) {
+  const e = String(rawEmail || '').trim().toLowerCase();
+  return DEMO_ALIAS_MAP[e] || e;
+}
+function isValidEmail(email) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(email || '').trim());
+}
+
 // Request OTP via email
 app.post('/auth/request-otp', async (req, res) => {
-  const schema = z.object({ email: z.string().email() });
+  // Accept aliases like "manager.sail@test" then normalize to a canonical email
+  const schema = z.object({ email: z.string().min(3) });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
-  const { email } = parsed.data;
-  // generate code and store
+  const rawEmail = parsed.data.email;
+  const email = normalizeDemoEmail(rawEmail);
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
+  // generate code and store (use normalized email as the OTP key)
   const code = String(Math.floor(100000 + Math.random()*900000));
   await otpSet(email, code, 5 * 60);
 
@@ -354,7 +389,14 @@ app.post('/auth/request-otp', async (req, res) => {
   const disableEmail = process.env.DISABLE_EMAIL === '1' || (!SMTP_HOST || !SMTP_USER || !SMTP_PASS);
 
   if (disableEmail) {
-    // Email disabled: do not expose OTP in response for security
+    // Email disabled: optionally log OTP for dev convenience, controlled by env flag
+    if (process.env.OTP_DEV_LOG === '1') {
+      const missing = [];
+      if (!SMTP_HOST) missing.push('SMTP_HOST');
+      if (!SMTP_USER) missing.push('SMTP_USER');
+      if (!SMTP_PASS) missing.push('SMTP_PASS');
+      console.log(`[QSTEEL][AUTH] OTP(for dev) email=${email} code=${code} exp=5m (email disabled, missing: ${missing.join(',') || 'DISABLE_EMAIL flag or unknown'})`);
+    }
     return res.json({ ok: true, message: 'OTP generated. Email delivery disabled by config.' });
   }
   try {
@@ -363,8 +405,19 @@ app.post('/auth/request-otp', async (req, res) => {
       port: SMTP_PORT,
       secure: SMTP_PORT === 465,
       auth: { user: SMTP_USER, pass: SMTP_PASS },
+      logger: process.env.SMTP_DEBUG === '1',
+      debug: process.env.SMTP_DEBUG === '1'
     });
-    const toEmail = OTP_RECIPIENT_MAP[email] || email;
+    if (process.env.OTP_DEBUG === '1') {
+      try {
+        await transporter.verify();
+        console.log('[OTP][SMTP] transporter verify OK');
+      } catch (verErr) {
+        console.warn('[OTP][SMTP] transporter verify FAILED:', verErr?.message || verErr);
+      }
+    }
+    // Prefer routing based on the raw alias if provided, then fall back to normalized
+    const toEmail = OTP_RECIPIENT_MAP[rawEmail] || OTP_RECIPIENT_MAP[email] || email;
     const info = await transporter.sendMail({
       from: SMTP_FROM,
       to: toEmail,
@@ -372,6 +425,9 @@ app.post('/auth/request-otp', async (req, res) => {
       text: `Your OTP is ${code}. It will expire in 5 minutes.`,
       html: `<p>Your OTP is <b>${code}</b>. It will expire in 5 minutes.</p>`
     });
+    if (process.env.OTP_DEBUG === '1') {
+      console.log('[OTP] dispatched', { entered: rawEmail, normalized: email, to: toEmail, codeMasked: code.replace(/^(\d{4})/, '****'), messageId: info?.messageId, accepted: info?.accepted, rejected: info?.rejected });
+    }
     res.json({ ok: true, messageId: info.messageId, to: toEmail });
   } catch (e) {
     console.warn('SMTP send failed:', e?.message || e);
@@ -380,11 +436,68 @@ app.post('/auth/request-otp', async (req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
-  const schema = z.object({ email: z.string().email(), otp: z.string().regex(/^\d{6}$/) });
+// Lightweight diagnostics (no secrets). Returns whether SMTP looks enabled and what mappings exist.
+app.get('/auth/diagnostics/otp', (req, res) => {
+  const SMTP_HOST = !!process.env.SMTP_HOST;
+  const SMTP_USER = !!process.env.SMTP_USER;
+  const SMTP_PASS = !!process.env.SMTP_PASS;
+  const SMTP_FROM = !!process.env.SMTP_FROM;
+  const disableEmail = process.env.DISABLE_EMAIL === '1' || !(SMTP_HOST && SMTP_USER && SMTP_PASS);
+  res.json({
+    ok: true,
+    disableEmail,
+    envFlags: { SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM, DISABLE_EMAIL: process.env.DISABLE_EMAIL === '1' },
+    aliases: DEMO_ALIAS_MAP,
+    mapping: OTP_RECIPIENT_MAP,
+  });
+});
+
+// Dev test email endpoint (disabled in production unless explicitly allowed)
+app.post('/auth/dev/test-email', async (req, res) => {
+  if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_DEV_TEST_EMAIL) {
+    return res.status(403).json({ error: 'Disabled in production' });
+  }
+  const schema = z.object({ to: z.string().email(), subject: z.string().optional(), body: z.string().optional() });
   const parsed = schema.safeParse(req.body || {});
   if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
-  const { email, otp } = parsed.data;
+  const { to, subject, body } = parsed.data;
+  const SMTP_HOST = process.env.SMTP_HOST || '';
+  const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+  const SMTP_USER = process.env.SMTP_USER || '';
+  const SMTP_PASS = process.env.SMTP_PASS || '';
+  const SMTP_FROM = process.env.SMTP_FROM || 'noreply@qsteel.local';
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) return res.status(400).json({ error: 'SMTP not configured' });
+  try {
+    const transporter = nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      logger: process.env.SMTP_DEBUG === '1',
+      debug: process.env.SMTP_DEBUG === '1'
+    });
+    const info = await transporter.sendMail({
+      from: SMTP_FROM,
+      to,
+      subject: subject || 'QSTEEL Test Email',
+      text: body || 'Test email from QSTEEL dev endpoint.',
+    });
+    res.json({ ok: true, messageId: info.messageId, accepted: info.accepted, rejected: info.rejected });
+  } catch (e) {
+    console.warn('[DEV][EMAIL] send failed:', e?.message || e);
+    res.status(500).json({ error: 'Send failed', message: e?.message || String(e) });
+  }
+});
+
+app.post('/auth/login', async (req, res) => {
+  // Accept demo aliases and normalize before OTP verification
+  const schema = z.object({ email: z.string().min(3), otp: z.string().regex(/^\d{6}$/) });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+  const rawEmail = parsed.data.email;
+  const email = normalizeDemoEmail(rawEmail);
+  const { otp } = parsed.data;
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
   // Prefer server-stored OTP when available; keep 123456 as a universal dev override
   let valid = false;
   const stored = await otpGet(email);
@@ -641,6 +754,223 @@ app.get('/yard/rakes', auth(), async (req, res) => {
     { code: 'rake-202', yard: 'Yard B', status: 'PENDING' },
     { code: 'rake-303', yard: 'Yard A', status: 'PENDING' },
   ]);
+});
+
+// Wagon health telemetry (mock) - yard role
+function generateWagonHealth(seed = Date.now()) {
+  // deterministic-ish via seed shifting
+  const rand = () => { const x = Math.sin(seed++) * 10000; return x - Math.floor(x); };
+  const now = Date.now();
+  const sample = (id) => ({
+    id: `WGN${id.toString().padStart(4,'0')}`,
+    lastBrakeTest: new Date(now - (rand()*72)*3600*1000).toISOString(),
+    brakeTestStatus: rand() < 0.92 ? 'PASS' : 'FAIL',
+    wheelWearMm: Number((6 + rand()*4).toFixed(1)),
+    wheelWearPercent: Number((rand()*55 + 20).toFixed(1)),
+    bearingTempC: Number((45 + rand()*25).toFixed(1)),
+    vibrationG: Number((0.3 + rand()*0.7).toFixed(2)),
+    sensors: {
+      acoustic: rand() < 0.95 ? 'OK' : 'ALERT',
+      infrared: rand() < 0.9 ? 'OK' : 'HOT',
+      loadCell: rand() < 0.93 ? 'OK' : 'CALIBRATE'
+    },
+    mileageSinceServiceKm: Math.floor(2000 + rand()*8000),
+    nextServiceDueKm: 12000,
+    alerts: []
+  });
+  const wagons = Array.from({length: 18}).map((_,i)=> sample(i+1));
+  wagons.forEach(w => {
+    if (w.brakeTestStatus === 'FAIL') w.alerts.push('Brake test failed');
+    if (w.wheelWearPercent > 65) w.alerts.push('High wheel wear');
+    if (w.bearingTempC > 65) w.alerts.push('Bearing overheating');
+    if (w.sensors.acoustic === 'ALERT') w.alerts.push('Acoustic anomaly');
+    if (w.sensors.infrared === 'HOT') w.alerts.push('Infrared hotspot');
+    if (w.sensors.loadCell === 'CALIBRATE') w.alerts.push('Load cell calibration needed');
+  });
+  const kpis = {
+    total: wagons.length,
+    brakeCompliance: Number((wagons.filter(w=> w.brakeTestStatus==='PASS').length / wagons.length *100).toFixed(1)),
+    avgWheelWear: Number((wagons.reduce((s,w)=> s + w.wheelWearPercent,0)/wagons.length).toFixed(1)),
+    overWearCount: wagons.filter(w=> w.wheelWearPercent>65).length,
+    sensorAlertRate: Number((wagons.filter(w=> w.alerts.some(a=> a.toLowerCase().includes('hot')||a.toLowerCase().includes('acoustic'))).length / wagons.length *100).toFixed(1)),
+    avgBearingTemp: Number((wagons.reduce((s,w)=> s + w.bearingTempC,0)/wagons.length).toFixed(1))
+  };
+  return { kpis, wagons, generatedAt: new Date().toISOString() };
+}
+
+app.get('/yard/wagon-health', auth('yard'), async (req, res) => {
+  try {
+    const data = generateWagonHealth();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to build wagon health data', detail: e?.message || String(e) });
+  }
+});
+
+// --- Yard Safety Mock Data + Streaming History ---
+const SAFETY_HISTORY = [];
+const MAX_SAFETY_HISTORY = 60; // keep last 60 snapshots
+
+function generateSafetyData(seed = Date.now()) {
+  const rand = () => { const x = Math.sin(seed++) * 10000; return x - Math.floor(x); };
+  const shifts = ['Morning','Afternoon','Night'];
+  const checklistTemplates = [
+    { id: 'CHK-PPE', title: 'PPE Compliance', items: ['Helmets','Gloves','Eye Protection','Hi-Vis Vests','Safety Boots'] },
+    { id: 'CHK-HOUSE', title: 'Housekeeping', items: ['Clear Aisles','No Oil Spills','Material Stacking','Waste Segregation'] },
+    { id: 'CHK-EQ', title: 'Equipment Readiness', items: ['Forklift Inspection','Crane Limit Switch','Fire Extinguishers','First Aid Kits'] }
+  ];
+  const completed = checklistTemplates.map(t => ({
+    id: t.id,
+    title: t.title,
+    shift: shifts[Math.floor(rand()*shifts.length)],
+    completedAt: new Date(Date.now() - rand()*6*3600*1000).toISOString(),
+    items: t.items.map(name => ({ name, status: rand() < 0.9 ? 'OK' : 'ISSUE', note: rand() < 0.15 ? 'Minor deviation' : '' }))
+  }));
+  const incidents = Array.from({length: 6}).map((_,i)=> ({
+    id: `INC${202+i}`,
+    type: rand() < 0.3 ? 'Near Miss' : (rand()<0.5 ? 'Minor Injury' : 'Unsafe Condition'),
+    severity: rand() < 0.7 ? 'Low' : (rand()<0.9? 'Medium':'High'),
+    description: rand()<0.5? 'Slip hazard near loading bay':'Unshielded moving part observed',
+    reportedBy: rand()<0.5? 'yard@sail.test':'hse@qsteel.local',
+    shift: shifts[Math.floor(rand()*shifts.length)],
+    status: rand()<0.6? 'Open': 'Closed',
+    ts: new Date(Date.now() - rand()*24*3600*1000).toISOString()
+  }));
+  const compliance = {
+    ppe: Number((85 + rand()*12).toFixed(1)),
+    housekeeping: Number((80 + rand()*15).toFixed(1)),
+    equipment: Number((78 + rand()*18).toFixed(1)),
+    trainingCompletion: Number((70 + rand()*25).toFixed(1)),
+    lastLostTimeIncidentDays: Math.floor(20 + rand()*40)
+  };
+  const openIssues = completed.flatMap(c => c.items.filter(i => i.status==='ISSUE').map(i => ({ checklist: c.id, item: i.name, note: i.note })));
+  const summary = {
+    totalIncidents: incidents.length,
+    openIncidentCount: incidents.filter(i=> i.status==='Open').length,
+    highSeverity: incidents.filter(i=> i.severity==='High').length,
+    checklistIssues: openIssues.length,
+    complianceScore: Number(((compliance.ppe+compliance.housekeeping+compliance.equipment)/3).toFixed(1))
+  };
+  return { summary, compliance, incidents, checklists: completed, openIssues, generatedAt: new Date().toISOString() };
+}
+
+function pushSafetySnapshot() {
+  const snap = generateSafetyData();
+  SAFETY_HISTORY.push(snap);
+  if (SAFETY_HISTORY.length > MAX_SAFETY_HISTORY) SAFETY_HISTORY.shift();
+  return snap;
+}
+
+// Seed some historical data if empty (simulate past 10 * 2min intervals)
+if (SAFETY_HISTORY.length === 0) {
+  const seedBase = Date.now() - (10 * 2 * 60 * 1000);
+  for (let i=0;i<10;i++) {
+    const snap = generateSafetyData(seedBase + i*1337);
+    // backdate timestamp
+    snap.generatedAt = new Date(seedBase + i*2*60*1000).toISOString();
+    SAFETY_HISTORY.push(snap);
+  }
+}
+
+// Periodic generation + websocket broadcast
+setInterval(() => {
+  const snap = pushSafetySnapshot();
+  try { io.emit('safety:update', { snapshot: snap }); } catch {}
+}, 20000); // every 20s
+
+app.get('/yard/safety', auth('yard'), (req, res) => {
+  try {
+    // ensure we have a fresh snapshot (but avoid generating twice within 5s)
+    const last = SAFETY_HISTORY[SAFETY_HISTORY.length -1];
+    if (!last || Date.now() - new Date(last.generatedAt).getTime() > 5000) {
+      pushSafetySnapshot();
+    }
+    res.json(SAFETY_HISTORY[SAFETY_HISTORY.length -1]);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to build safety data', detail: e?.message || String(e) });
+  }
+});
+
+app.get('/yard/safety/history', auth('yard'), (req, res) => {
+  try {
+    res.json(SAFETY_HISTORY.map(s => ({ generatedAt: s.generatedAt, compliance: s.compliance, summary: s.summary })));
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to build safety history', detail: e?.message || String(e) });
+  }
+});
+
+app.get('/yard/safety/export.csv', auth('yard'), (req, res) => {
+  const data = SAFETY_HISTORY[SAFETY_HISTORY.length -1] || pushSafetySnapshot();
+  const header = 'id,type,severity,status,shift,reportedBy,ts';
+  const rows = data.incidents.map(i=> [i.id,i.type,i.severity,i.status,i.shift,i.reportedBy,i.ts].join(','));
+  const meta = `# generatedAt=${data.generatedAt},openIncidents=${data.summary.openIncidentCount},highSeverity=${data.summary.highSeverity}`;
+  const csv = [meta, header, ...rows].join('\n');
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="yard-safety-incidents.csv"');
+  res.send(csv);
+});
+
+// Wagon detail with synthetic trend series for spark lines
+app.get('/yard/wagon-health/:id', auth('yard'), (req, res) => {
+  try {
+    const id = req.params.id.toUpperCase();
+    const base = generateWagonHealth(id.split('').reduce((a,c)=> a + c.charCodeAt(0), 0));
+    const wagon = base.wagons.find(w=> w.id === id);
+    if (!wagon) return res.status(404).json({ error: 'Not found'});
+    const points = 12;
+    const seed = id.split('').reduce((a,c)=> a + c.charCodeAt(0), 42);
+    let s = seed;
+    const r = () => { const x = Math.sin(s++) * 10000; return x - Math.floor(x); };
+    const series = Array.from({length: points}).map((_,i)=> ({
+      t: i - (points-1),
+      bearingTempC: Number((wagon.bearingTempC + (r()*6-3) + (i/points)*2).toFixed(1)),
+      wheelWearPercent: Number((wagon.wheelWearPercent - 2 + r()*4).toFixed(1)),
+      vibrationG: Number((wagon.vibrationG + (r()*0.2-0.1)).toFixed(2))
+    }));
+    res.json({ wagon, trends: series, generatedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to generate detail', detail: e?.message || String(e) });
+  }
+});
+
+// CSV export
+app.get('/yard/wagon-health/export.csv', auth('yard'), (req, res) => {
+  const { wagons, kpis, generatedAt } = generateWagonHealth();
+  const header = 'id,brakeTestStatus,wheelWearPercent,bearingTempC,vibrationG,alerts';
+  const rows = wagons.map(w=> [w.id,w.brakeTestStatus,w.wheelWearPercent,w.bearingTempC,w.vibrationG,`"${w.alerts.join('|')}"`].join(','));
+  const meta = `# generatedAt=${generatedAt},total=${kpis.total},brakeCompliance=${kpis.brakeCompliance}`;
+  const csv = [meta, header, ...rows].join('\n');
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="wagon-health.csv"');
+  res.send(csv);
+});
+
+// PDF export snapshot
+app.get('/yard/wagon-health/export.pdf', auth('yard'), (req, res) => {
+  try {
+    const { wagons, kpis, generatedAt } = generateWagonHealth();
+    res.setHeader('Content-Type','application/pdf');
+    res.setHeader('Content-Disposition','attachment; filename="wagon-health.pdf"');
+    const doc = new PDFDocument({ size: 'A4', margin: 36 });
+    doc.pipe(res);
+    doc.fontSize(18).fillColor('#111827').text('QSTEEL — Wagon Health Snapshot');
+    doc.moveDown(0.5).fontSize(9).fillColor('#6B7280').text(`Generated: ${generatedAt}`);
+    doc.moveDown(0.5).fontSize(11).fillColor('#111827').text('KPIs');
+    doc.fontSize(9).fillColor('#111827');
+    const kpiEntries = Object.entries(kpis);
+    kpiEntries.forEach(([k,v])=> doc.text(`${k}: ${v}`));
+    doc.moveDown(0.5).fontSize(11).text('Wagons');
+    doc.fontSize(8);
+    const cols = ['ID','Brake','Wear%','Bearing','Vibe','Alerts'];
+    doc.text(cols.join(' | '));
+    doc.moveDown(0.2);
+    wagons.slice(0,60).forEach(w=> {
+      doc.text(`${w.id} | ${w.brakeTestStatus} | ${w.wheelWearPercent} | ${w.bearingTempC} | ${w.vibrationG} | ${w.alerts.join('; ')}`);
+    });
+    doc.end();
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to export PDF', detail: e?.message || String(e) });
+  }
 });
 
 app.post('/yard/rake/:code/confirm-loading', auth('yard'), async (req, res) => {
@@ -902,6 +1232,77 @@ app.post('/optimize/rake-formation', auth(), async (req, res) => {
   }
 });
 
+// =========================
+// Operations Simulator (What-if)
+// =========================
+// Accepts: { scenarios: [{ id?, origin, destination, product, tonnage, desiredDeparture (ISO), wagons? }], constraints?: { maxRakes?, locoType? } }
+// Returns evaluation per scenario with ETA, rake plan, utilization, cost & emissions deltas.
+app.post('/simulator/run', auth('manager'), (req, res) => {
+  try {
+    const { scenarios = [], constraints = {} } = req.body || {};
+    if (!Array.isArray(scenarios) || !scenarios.length) return res.status(400).json({ error: 'Provide scenarios[]' });
+    const locoType = constraints.locoType === 'electric' ? 'electric' : 'diesel';
+    const results = scenarios.map((sc, idx) => {
+      const id = sc.id || `SCN-${idx+1}`;
+      const distance = getDistance(sc.origin, sc.destination);
+      const capacityPerWagon = 60; // assumption
+      const requiredWagons = Math.ceil(sc.tonnage / capacityPerWagon);
+      const wagonsUsed = sc.wagons && sc.wagons>0 ? Math.min(sc.wagons, requiredWagons) : requiredWagons;
+      const loadedQty = Math.min(sc.tonnage, wagonsUsed * capacityPerWagon);
+      const utilization = loadedQty / (wagonsUsed * capacityPerWagon);
+      const baseSpeedKph = locoType === 'electric' ? 55 : 50;
+      const runHours = distance / baseSpeedKph;
+      const dwellHours = 3 + (wagonsUsed * 0.15);
+      const depart = sc.desiredDeparture ? new Date(sc.desiredDeparture) : new Date();
+      const eta = new Date(depart.getTime() + (runHours + dwellHours) * 3600 * 1000);
+      const cost = {
+        transport: Math.round(distance * wagonsUsed * 22),
+        energy: Math.round(distance * wagonsUsed * (locoType==='electric'? 8: 14)),
+        handling: Math.round(wagonsUsed * 500)
+      };
+      const totalCost = cost.transport + cost.energy + cost.handling;
+      const emissionsKg = calculateEmissions(distance, wagonsUsed * capacityPerWagon, locoType);
+      const altLocoEmissions = calculateEmissions(distance, wagonsUsed * capacityPerWagon, locoType==='electric'? 'diesel':'electric');
+      const emissionsDelta = altLocoEmissions - emissionsKg;
+      return {
+        id,
+        input: sc,
+        distanceKm: distance,
+        wagonsUsed,
+        capacityPerWagon,
+        loadedQty,
+        utilization: Number((utilization*100).toFixed(1)),
+        departure: depart.toISOString(),
+        eta: eta.toISOString(),
+        transitHours: Number((runHours + dwellHours).toFixed(1)),
+        locoType,
+        cost: { ...cost, total: totalCost },
+        emissionsKg: Number(emissionsKg.toFixed(2)),
+        emissionsDeltaVsAlternate: Number(emissionsDelta.toFixed(2)),
+        notes: utilization < 0.85 ? ['Low utilization — consider consolidating'] : [],
+      };
+    });
+    // simple aggregate
+    const aggregate = {
+      totalWagons: results.reduce((s,r)=> s + r.wagonsUsed,0),
+      avgUtilization: Number((results.reduce((s,r)=> s + r.utilization,0)/results.length).toFixed(1)),
+      totalCost: results.reduce((s,r)=> s + r.cost.total,0),
+      totalEmissionsKg: Number(results.reduce((s,r)=> s + r.emissionsKg,0).toFixed(2)),
+      scenarios: results.length
+    };
+    res.json({ aggregate, results, generatedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: 'Simulation failed', detail: e?.message || String(e) });
+  }
+});
+
+// Alias routes (defensive so demo never 404s if a proxy strips segments)
+app.post('/manager/simulator/run', auth('manager'), (req,res)=> {
+  req.url = '/simulator/run';
+  app._router.handle(req,res,()=>{});
+});
+app.get('/simulator/ping', auth('manager'), (_req,res)=> res.json({ ok:true, service:'simulator', ts: Date.now() }));
+
 // Scenario Simulation (What-If Analysis)
 app.post('/optimize/simulate-scenario', auth(), async (req, res) => {
   try {
@@ -1078,6 +1479,25 @@ app.post('/assistant', auth(), async (req, res) => {
           { id: 'reoptimize', label: '🔄 Re-run with Different Weights', type: 'dialog' }
         ]
       };
+
+      // Mock Audit & Compliance report entries (10 rows)
+      // Each entry captures category, severity, operational context, a key metric and owner/status
+      const AUDIT_REPORTS = (() => {
+        const now = Date.now();
+        const mins = (m) => new Date(now - m * 60 * 1000).toISOString();
+        return [
+          { id: 'ACR-001', type: 'Safety Incident', severity: 'high', rakeId: 'RK006', route: 'BKSC→DGR', title: 'Near-miss at siding', details: 'Shunter reported brake slip during coupling.', metricName: 'Idle Time Added (min)', metricValue: 18, status: 'Investigating', actor: 'yard@sail.test', ts: mins(35) },
+          { id: 'ACR-002', type: 'Emission', severity: 'medium', rakeId: 'RK004', route: 'ROU→BPHB', title: 'Diesel smoke spike', details: 'Opacity exceeded threshold on gradient.', metricName: 'CO₂ (t)', metricValue: 3.4, status: 'Resolved', actor: 'telemetry', ts: mins(90) },
+          { id: 'ACR-003', type: 'SLA Breach', severity: 'high', rakeId: 'RK002', route: 'BKSC→ROU', title: 'Late arrival vs SLA', details: 'Blocked section near Asansol.', metricName: 'Delay (min)', metricValue: 62, status: 'Open', actor: 'ops@qsteel.local', ts: mins(150) },
+          { id: 'ACR-004', type: 'Compliance Audit', severity: 'low', rakeId: '—', route: 'BKSC Yard', title: 'PPE spot-check', details: '98% PPE compliance in morning shift.', metricName: 'Compliance (%)', metricValue: 98, status: 'Closed', actor: 'audit@qsteel.local', ts: mins(210) },
+          { id: 'ACR-005', type: 'Safety Incident', severity: 'critical', rakeId: 'RK007', route: 'BKSC→DGR', title: 'Over-speed alarm', details: 'Speed exceeded 60 km/h in yard limit.', metricName: 'Max Speed (km/h)', metricValue: 64, status: 'Mitigated', actor: 'telemetry', ts: mins(260) },
+          { id: 'ACR-006', type: 'Emission', severity: 'low', rakeId: 'RK003', route: 'ROU→BKSC', title: 'Noise threshold crossed', details: 'Short-duration horn dB peak.', metricName: 'Noise (dB)', metricValue: 86, status: 'Closed', actor: 'telemetry', ts: mins(320) },
+          { id: 'ACR-007', type: 'SLA Breach', severity: 'medium', rakeId: 'RK001', route: 'BKSC→BPHB', title: 'Dwell over target', details: 'Loading dwell exceeded SOP at BKSC.', metricName: 'Dwell (min)', metricValue: 42, status: 'Open', actor: 'yard@sail.test', ts: mins(380) },
+          { id: 'ACR-008', type: 'Compliance Audit', severity: 'medium', rakeId: '—', route: 'DGR Yard', title: 'Waste segregation lapse', details: 'Mixed scrap observed at bay-2.', metricName: 'Findings (#)', metricValue: 3, status: 'Assigned', actor: 'audit@qsteel.local', ts: mins(460) },
+          { id: 'ACR-009', type: 'Safety Incident', severity: 'low', rakeId: 'RK005', route: 'DGR→ROU', title: 'Minor slip report', details: 'Worker slipped near wet surface, no injury.', metricName: 'Medical Cases', metricValue: 0, status: 'Closed', actor: 'hse@qsteel.local', ts: mins(510) },
+          { id: 'ACR-010', type: 'Emission', severity: 'high', rakeId: 'RK004', route: 'ROU→BPHB', title: 'Fuel leak contained', details: 'Small diesel leak at Jharsuguda siding.', metricName: 'Leak (L)', metricValue: 12, status: 'Resolved', actor: 'yard@sail.test', ts: mins(640) },
+        ];
+      })();
       
       // Cache for future queries
       await cacheSet('latest_optimization', result, 300);
@@ -2148,37 +2568,265 @@ setInterval(() => {
   io.emit('positions', getLivePositions());
 }, 2000);
 
+// Mock Audit ticker: mutate audit dataset periodically to simulate live updates
+setInterval(() => {
+  try {
+    if (!Array.isArray(AUDIT_REPORTS)) return;
+    const rand = Math.random();
+    const nowIso = new Date().toISOString();
+    const pick = (arr) => arr[Math.floor(Math.random()*arr.length)];
+    const rakes = (MOCK_DATA.rakes || []).map(r => r.id);
+
+    // 35%: add a fresh emission datapoint (CO₂)
+    if (rand < 0.35) {
+      const n = {
+        id: `ACR-${String(100 + Math.floor(Math.random()*900)).padStart(3,'0')}`,
+        type: 'Emission', severity: pick(['low','medium','high']),
+        rakeId: pick(rakes) || 'RK004', route: pick(['BKSC→DGR','ROU→BPHB','BKSC→ROU']),
+        title: 'CO₂ reading update', details: 'Telemetry carbon snapshot recorded.',
+        metricName: 'CO₂ (t)', metricValue: Number((Math.random()*5 + 0.5).toFixed(2)),
+        status: 'Closed', actor: 'telemetry', ts: nowIso
+      };
+      AUDIT_REPORTS.push(n);
+    // 25%: toggle an SLA breach status or create one
+    } else if (rand < 0.60) {
+      const breaches = AUDIT_REPORTS.filter(x => x.type === 'SLA Breach');
+      if (breaches.length && Math.random() < 0.6) {
+        const b = pick(breaches);
+        b.status = pick(['Open','Resolved','Closed']);
+        b.ts = nowIso;
+      } else {
+        AUDIT_REPORTS.push({
+          id: `ACR-${String(100 + Math.floor(Math.random()*900)).padStart(3,'0')}`,
+          type: 'SLA Breach', severity: pick(['medium','high']),
+          rakeId: pick(rakes) || 'RK002', route: pick(['BKSC→ROU','BKSC→DGR']),
+          title: 'Delay vs SLA window', details: 'Section congestion led to missed window.',
+          metricName: 'Delay (min)', metricValue: Math.floor(20 + Math.random()*90),
+          status: pick(['Open','Resolved']), actor: 'ops@qsteel.local', ts: nowIso
+        });
+      }
+    // 20%: add or update a safety near-miss (low/medium)
+    } else if (rand < 0.80) {
+      const n = {
+        id: `ACR-${String(100 + Math.floor(Math.random()*900)).padStart(3,'0')}`,
+        type: 'Safety Incident', severity: pick(['low','medium']),
+        rakeId: pick(rakes) || 'RK007', route: pick(['BKSC→DGR','DGR Yard']),
+        title: 'Near-miss reported', details: 'Worker reported unsafe proximity during shunting.',
+        metricName: 'Medical Cases', metricValue: 0,
+        status: pick(['Open','Closed','Investigating','Mitigated']), actor: pick(['hse@qsteel.local','yard@sail.test']), ts: nowIso
+      };
+      AUDIT_REPORTS.push(n);
+    // 20%: close out old items randomly
+    } else {
+      const openIdx = AUDIT_REPORTS.findIndex(x => /open|investigating|assigned/i.test(x.status));
+      if (openIdx >= 0) {
+        AUDIT_REPORTS[openIdx].status = pick(['Closed','Resolved','Mitigated']);
+        AUDIT_REPORTS[openIdx].ts = nowIso;
+      }
+    }
+
+    // Keep list bounded (latest 40)
+    if (AUDIT_REPORTS.length > 40) {
+      AUDIT_REPORTS.splice(0, AUDIT_REPORTS.length - 40);
+    }
+  } catch {}
+}, 5000);
+
+// Audit & Compliance Reports
+app.get('/reports/audit', auth('admin'), (req, res) => {
+  res.json({ items: AUDIT_REPORTS, count: AUDIT_REPORTS.length, generatedAt: new Date().toISOString() });
+});
+
+app.get('/reports/audit.csv', auth('admin'), (req, res) => {
+  const headers = ['ID','Type','Severity','Rake/Asset','Route/Location','Title','Details','Metric','Value','Status','Actor','Timestamp'];
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = AUDIT_REPORTS.map(r => [
+    r.id, r.type, r.severity, r.rakeId, r.route, r.title, r.details, r.metricName, r.metricValue, r.status, r.actor, r.ts
+  ].map(esc).join(','));
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="audit-compliance.csv"');
+  res.send(headers.join(',') + '\n' + rows.join('\n'));
+});
+
+app.get('/reports/audit.pdf', auth('admin'), (req, res) => {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="audit-compliance.pdf"');
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(res);
+
+  // Header
+  doc.fontSize(18).text('Audit & Compliance Report', { align: 'left' });
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor('#666').text(`Generated: ${new Date().toLocaleString()}`);
+  doc.moveDown(0.6).fillColor('#000');
+
+  // Summary pills
+  const counts = AUDIT_REPORTS.reduce((acc, r) => { acc[r.severity] = (acc[r.severity]||0)+1; return acc; }, {});
+  const total = AUDIT_REPORTS.length;
+  const y0 = doc.y; const pill = (x, title, value) => {
+    doc.rect(x, y0, 160, 48).stroke('#e5e7eb');
+    doc.fontSize(9).fillColor('#6b7280').text(title, x + 8, y0 + 8);
+    doc.fontSize(14).fillColor('#111827').text(String(value), x + 8, y0 + 24);
+  };
+  pill(40, 'Total Findings', total);
+  pill(210, 'High/Critical', (counts['high']||0) + (counts['critical']||0));
+  pill(380, 'Open Items', AUDIT_REPORTS.filter(r=>/open|investigating|assigned/i.test(r.status)).length);
+  doc.moveDown(4);
+
+  // Table
+  const cols = [
+    { key: 'id', label: 'ID', w: 60 },
+    { key: 'type', label: 'Type', w: 90 },
+    { key: 'severity', label: 'Sev', w: 45 },
+    { key: 'rakeId', label: 'Rake', w: 55 },
+    { key: 'route', label: 'Route/Location', w: 100 },
+    { key: 'title', label: 'Title', w: 120 },
+    { key: 'metric', label: 'Metric', w: 75 },
+    { key: 'value', label: 'Value', w: 45 },
+    { key: 'status', label: 'Status', w: 70 },
+  ];
+
+  let x = 40; let y = doc.y + 10;
+  doc.fontSize(10).fillColor('#374151');
+  cols.forEach(c => { doc.text(c.label, x, y, { width: c.w }); x += c.w; });
+  y += 16; x = 40; doc.moveTo(40, y).lineTo(555, y).stroke('#e5e7eb'); y += 6;
+
+  doc.fontSize(9).fillColor('#111827');
+  AUDIT_REPORTS.forEach(r => {
+    if (y > 770) { doc.addPage(); y = 40; x = 40; }
+    const cells = [
+      r.id,
+      r.type,
+      r.severity,
+      r.rakeId,
+      r.route,
+      r.title,
+      r.metricName,
+      r.metricValue,
+      r.status,
+    ];
+    cells.forEach((val, i) => { const c = cols[i]; doc.text(String(val), x, y, { width: c.w }); x += c.w; });
+    x = 40; y += 16; doc.moveTo(40, y).lineTo(555, y).stroke('#f3f4f6'); y += 2;
+  });
+
+  doc.end();
+});
+
 // API Endpoints for Advanced Optimizer
 app.post('/optimizer/rake-formation', auth(), async (req, res) => {
   try {
-    const orderSchema = z.object({ id: z.string(), product: z.string(), qty: z.number().positive(), from: z.string(), to: z.string(), slaDays: z.number().int().positive() });
+    // Align validation schema with actual mock order structure. Allow legacy field names.
+    const orderSchema = z.object({
+      id: z.string(),
+      product: z.string(),
+      qty: z.number().positive(),
+      // Current data uses 'destination'. Accept legacy 'to'.
+      destination: z.string().optional(),
+      to: z.string().optional(),
+      // Optional priority / dueDate / penalty fields present in mock data
+      priority: z.string().optional(),
+      dueDate: z.string().optional(),
+      penalty: z.number().optional(),
+      // Legacy request style: from / slaDays (convert if present)
+      from: z.string().optional(),
+      slaDays: z.number().int().positive().optional()
+    }).passthrough();
+
     const bodySchema = z.object({
       orders: z.array(orderSchema).default(OPTIMIZER_DATA.orders),
       weights: z.object({ cost: z.number().optional(), sla: z.number().optional(), utilization: z.number().optional(), emissions: z.number().optional() }).default({}),
       constraints: z.record(z.any()).default({})
     });
+
     const parsed = bodySchema.safeParse(req.body || {});
-    if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
-    const { orders, weights = {}, constraints = {} } = parsed.data;
-    
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+    }
+
+    const { orders, weights = {} } = parsed.data;
+
+    // Normalize orders so optimizer always receives the expected shape
+    const normalizedOrders = (orders || []).map(o => {
+      const destination = o.destination || o.to || 'Unknown';
+      // Derive dueDate from slaDays if provided and dueDate missing
+      let dueDate = o.dueDate;
+      if (!dueDate && o.slaDays) {
+        dueDate = new Date(Date.now() + o.slaDays * 24 * 60 * 60 * 1000).toISOString();
+      }
+      if (!dueDate) {
+        // Fallback: spread deliveries over next 48h
+        dueDate = new Date(Date.now() + Math.floor(Math.random() * 48) * 60 * 60 * 1000).toISOString();
+      }
+      return {
+        id: o.id,
+        product: o.product,
+        qty: o.qty,
+        destination,
+        priority: o.priority || 'Medium',
+        dueDate,
+        penalty: typeof o.penalty === 'number' ? o.penalty : 1500
+      };
+    });
+
     const optimizationWeights = {
-      cost: weights.cost || 0.3,
-      sla: weights.sla || 0.4,
-      utilization: weights.utilization || 0.2,
-      emissions: weights.emissions || 0.1
+      cost: (typeof weights.cost === 'number' ? weights.cost : 0.3) || 0.3,
+      sla: (typeof weights.sla === 'number' ? weights.sla : 0.4) || 0.4,
+      utilization: (typeof weights.utilization === 'number' ? weights.utilization : 0.2) || 0.2,
+      emissions: (typeof weights.emissions === 'number' ? weights.emissions : 0.1) || 0.1
     };
 
-    const result = optimizeRakeFormation(orders, optimizationWeights);
-    
+    const result = optimizeRakeFormation(normalizedOrders.length ? normalizedOrders : OPTIMIZER_DATA.orders, optimizationWeights);
+
     res.json({
       success: true,
       optimization: result,
+      weights: optimizationWeights,
+      orderCount: normalizedOrders.length || OPTIMIZER_DATA.orders.length,
       timestamp: new Date().toISOString(),
-      processingTimeMs: Math.floor(Math.random() * 500 + 200) // Simulated
+      processingTimeMs: Math.floor(Math.random() * 500 + 200) // Simulated latency for realism
     });
   } catch (error) {
+    console.error('Optimizer error (rake-formation):', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Optimizer alias endpoints (defensive for demos / alternate routing under manager/admin prefixes)
+['manager','admin'].forEach(prefix => {
+  app.post(`/${prefix}/optimizer/rake-formation`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/rake-formation';
+    app._router.handle(req,res,()=>{});
+  });
+  app.post(`/${prefix}/optimizer/scenario-analysis`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/scenario-analysis';
+    app._router.handle(req,res,()=>{});
+  });
+  app.get(`/${prefix}/optimizer/constraints`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/constraints';
+    app._router.handle(req,res,()=>{});
+  });
+  app.get(`/${prefix}/optimizer/production-alignment`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/production-alignment';
+    app._router.handle(req,res,()=>{});
+  });
+  app.get(`/${prefix}/optimizer/daily-plan`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/daily-plan';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
+// Lightweight mock data endpoint (for offline demo / health check)
+app.get('/optimizer/mock', auth(), (req,res) => {
+  const result = optimizeRakeFormation(OPTIMIZER_DATA.orders.slice(0,5));
+  res.json({
+    success:true,
+    optimization: result,
+    mock:true,
+    hint: 'This is a lightweight mock dataset for demo fallback.'
+  });
 });
 
 app.post('/optimizer/scenario-analysis', auth(), async (req, res) => {
@@ -2244,6 +2892,168 @@ app.post('/optimizer/scenario-analysis', auth(), async (req, res) => {
   }
 });
 
+// -------------------------------------------------------------
+// Advanced Hybrid Optimizer (Mock MILP + Heuristic + Pareto)
+// -------------------------------------------------------------
+// This endpoint simulates a multi-stage pipeline:
+// 1. Clustering (orders grouped by destination)
+// 2. Heuristic seeding (greedy packing by priority + earliest due date)
+// 3. Local swap search (pseudo MILP refinement)
+// 4. Pareto sampling (cost vs emissions vs SLA risk trade-offs)
+// Returns rich explainability metadata for UI transparency.
+app.post('/optimizer/rake-formation/advanced', auth(), async (req, res) => {
+  try {
+    const { orders = OPTIMIZER_DATA.orders, wagons = [], weights = {} } = req.body || {};
+    if (!Array.isArray(orders)) return res.status(400).json({ error: 'orders must be array' });
+
+    const W = {
+      cost: typeof weights.cost === 'number' ? weights.cost : 0.25,
+      sla: typeof weights.sla === 'number' ? weights.sla : 0.25,
+      utilization: typeof weights.utilization === 'number' ? weights.utilization : 0.25,
+      emissions: typeof weights.emissions === 'number' ? weights.emissions : 0.25,
+    };
+
+    // 1. Clustering by destination
+    const clusters = {};
+    orders.forEach(o => {
+      const key = (o.destination || o.to || 'UNKNOWN').toUpperCase();
+      if (!clusters[key]) clusters[key] = { destination: key, orders: [], totalQty: 0, earliestDue: null };
+      clusters[key].orders.push(o);
+      clusters[key].totalQty += o.qty || o.quantity || o.quantityTons || 0;
+      const due = new Date(o.dueDate || Date.now() + 24*3600*1000);
+      if (!clusters[key].earliestDue || due < clusters[key].earliestDue) clusters[key].earliestDue = due;
+    });
+
+    // 2. Heuristic seeding: sort orders by priority (mapped) then due date
+    const priMap = { high:3, medium:2, low:1 };
+    const sorted = [...orders].sort((a,b) => (
+      (priMap[String(b.priority||'medium').toLowerCase()]||2) - (priMap[String(a.priority||'medium').toLowerCase()]||2)
+    ) || (new Date(a.dueDate||0).getTime() - new Date(b.dueDate||0).getTime()));
+    const seedWagons = (wagons && wagons.length ? wagons : Array.from({ length: 10 }).map((_,i) => ({ id: 'WG'+(i+1), capacity: 60, used: 0, orders: [] })));
+    sorted.forEach(o => {
+      const qty = o.qty || o.quantity || o.quantityTons || 0;
+      let remaining = qty;
+      // first-fit into existing wagons
+      for (const w of seedWagons) {
+        if (remaining <= 0) break;
+        const space = w.capacity - w.used;
+        if (space <= 0) continue;
+        const alloc = Math.min(space, remaining);
+        if (alloc > 0) {
+          w.orders.push({ id: o.id, alloc });
+          w.used += alloc;
+          remaining -= alloc;
+        }
+      }
+      // if leftover create virtual wagons
+      while (remaining > 0) {
+        const alloc = Math.min(60, remaining);
+        seedWagons.push({ id: 'VIRT-'+seedWagons.length, capacity: 60, used: alloc, orders: [{ id: o.id, alloc }], virtual: true });
+        remaining -= alloc;
+      }
+    });
+
+    // 3. Local swap refinement to balance utilization
+    const swaps = [];
+    function wagonLoadVariance() {
+      const loads = seedWagons.map(w=> w.used / w.capacity);
+      const mu = loads.reduce((a,b)=>a+b,0)/loads.length;
+      return loads.reduce((s,l)=> s + (l-mu)**2,0)/loads.length;
+    }
+    let bestVar = wagonLoadVariance();
+    for (let iter=0; iter<40; iter++) {
+      const a = seedWagons[Math.floor(Math.random()*seedWagons.length)];
+      const b = seedWagons[Math.floor(Math.random()*seedWagons.length)];
+      if (!a||!b||a===b||!a.orders.length||!b.orders.length) continue;
+      const ao = a.orders[Math.floor(Math.random()*a.orders.length)];
+      const bo = b.orders[Math.floor(Math.random()*b.orders.length)];
+      if (!ao || !bo) continue;
+      // swap amounts (simple) if within capacity limits
+      const newAUsed = a.used - ao.alloc + bo.alloc;
+      const newBUsed = b.used - bo.alloc + ao.alloc;
+      if (newAUsed <= a.capacity && newBUsed <= b.capacity) {
+        const prevVar = bestVar;
+        // execute swap
+        a.used = newAUsed; b.used = newBUsed;
+        const tmpAlloc = ao.alloc; ao.alloc = bo.alloc; bo.alloc = tmpAlloc;
+        const v = wagonLoadVariance();
+        if (v < bestVar) { bestVar = v; swaps.push({ iter, a: a.id, b: b.id, variance: Number(v.toFixed(4)) }); }
+        else {
+          // revert if not improved (hill climbing)
+          a.used = a.used - bo.alloc + ao.alloc;
+          b.used = b.used - ao.alloc + bo.alloc;
+          const tmp = ao.alloc; ao.alloc = bo.alloc; bo.alloc = tmp;
+        }
+      }
+      if (swaps.length >= 12) break;
+    }
+
+    // 4. Pareto sampling - synthesize alternative solutions with trade-offs
+    const utilization = seedWagons.reduce((s,w)=> s + (w.used/w.capacity),0)/seedWagons.length;
+    const baseCost = 1000 + seedWagons.length * 250 + (1-utilization)*800;
+    const baseEmissions = 500 + seedWagons.length * 15 - utilization*120;
+    const baseSlaRisk = (1-utilization) * 0.15 + (Object.keys(clusters).length * 0.01);
+    const alternatives = Array.from({ length: 4 }).map((_,i)=> {
+      const f = 0.9 + i*0.04; // shift trade-off surface
+      return {
+        id: 'ALT-'+(i+1),
+        cost: Number((baseCost * f).toFixed(2)),
+        emissions: Number((baseEmissions * (2 - f)).toFixed(2)),
+        slaRisk: Number((baseSlaRisk * (1 + (0.2 - i*0.03))).toFixed(3)),
+        utilization: Number((utilization * (0.95 + i*0.02)).toFixed(3)),
+        note: 'Synthetic Pareto sample'
+      };
+    });
+
+    // Score & pick optimal using weights (lower cost/emissions/risk better, higher utilization better)
+    function score(a) {
+      return (
+        -W.cost * a.cost +
+        -W.emissions * a.emissions +
+        -W.sla * a.slaRisk * 1000 +
+        W.utilization * a.utilization * 1000
+      );
+    }
+    const optimal = alternatives.reduce((best,a)=> score(a) > score(best) ? a : best, alternatives[0]);
+
+    const explanation = {
+      method: 'hybrid-milp-heuristic',
+      objectiveWeights: W,
+      stages: [
+        { stage: 'clustering', clusters: Object.keys(clusters).length, details: Object.values(clusters).map(c => ({ destination: c.destination, orders: c.orders.length, totalQty: c.totalQty })) },
+        { stage: 'heuristic_seeding', wagonsSeeded: seedWagons.length, avgFill: Number((utilization*100).toFixed(1)) },
+        { stage: 'local_refinement', swapsTried: swaps.length, bestVariance: bestVar },
+        { stage: 'pareto_sampling', samples: alternatives.length }
+      ],
+      decisionLog: [
+        'Grouped orders to reduce fragmentation and improve fill ratio',
+        'Allocated high-priority & earliest-due orders first for SLA protection',
+        'Performed hill-climb swaps to balance wagon loads (lower variance)',
+        'Generated Pareto variants to surface trade-offs for planner review'
+      ],
+      rationale: 'Heuristic seeding + local refinement approximates MILP solutions while remaining fast for interactive planning.'
+    };
+
+    res.json({
+      success: true,
+      optimization: { optimal, alternatives, explanation, method: 'hybrid-milp-heuristic' },
+      wagons: seedWagons.map(w => ({ id: w.id, used: w.used, capacity: w.capacity, fill: Number((w.used / w.capacity * 100).toFixed(1)), orders: w.orders })),
+      meta: { clusters: Object.keys(clusters).length, utilization: Number((utilization*100).toFixed(1)) }
+    });
+  } catch (e) {
+    console.error('advanced optimizer error:', e);
+    res.status(500).json({ error: 'Advanced optimizer failed', detail: e?.message || String(e) });
+  }
+});
+
+// Role-prefixed aliases for advanced hybrid endpoint
+['manager','admin'].forEach(prefix => {
+  app.post(`/${prefix}/optimizer/rake-formation/advanced`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/rake-formation/advanced';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
 app.get('/optimizer/production-alignment', auth(), async (req, res) => {
   try {
     const alignment = analyzeProductionAlignment();
@@ -2253,6 +3063,14 @@ app.get('/optimizer/production-alignment', auth(), async (req, res) => {
   }
 });
 
+// Role-prefixed aliases for production alignment (manager/admin)
+['manager','admin'].forEach(prefix => {
+  app.get(`/${prefix}/optimizer/production-alignment`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/production-alignment';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
 app.get('/optimizer/constraints', auth(), async (req, res) => {
   res.json({
     constraints: OPTIMIZER_CONFIG.constraints,
@@ -2260,6 +3078,52 @@ app.get('/optimizer/constraints', auth(), async (req, res) => {
     loadingPoints: OPTIMIZER_CONFIG.constraints.loadingPoints,
     costs: OPTIMIZER_CONFIG.costs
   });
+});
+
+// Role-prefixed aliases for constraints (manager/admin)
+['manager','admin'].forEach(prefix => {
+  app.get(`/${prefix}/optimizer/constraints`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/constraints';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
+// Update optimizer constraints (admin only, dev-friendly). Accepts partial updates.
+app.post('/optimizer/constraints', auth('admin'), async (req, res) => {
+  try {
+    const num = (v) => (typeof v === 'number' && !Number.isNaN(v)) ? v : undefined;
+    const arr = (v) => Array.isArray(v) ? v : undefined;
+    const obj = (v) => (v && typeof v === 'object') ? v : undefined;
+    const body = req.body || {};
+
+    if (obj(body.minRakeSize)) {
+      OPTIMIZER_CONFIG.constraints.minRakeSize.tons = num(body.minRakeSize.tons) ?? OPTIMIZER_CONFIG.constraints.minRakeSize.tons;
+      OPTIMIZER_CONFIG.constraints.minRakeSize.wagons = num(body.minRakeSize.wagons) ?? OPTIMIZER_CONFIG.constraints.minRakeSize.wagons;
+    }
+    if (obj(body.maxRakeSize)) {
+      OPTIMIZER_CONFIG.constraints.maxRakeSize.tons = num(body.maxRakeSize.tons) ?? OPTIMIZER_CONFIG.constraints.maxRakeSize.tons;
+      OPTIMIZER_CONFIG.constraints.maxRakeSize.wagons = num(body.maxRakeSize.wagons) ?? OPTIMIZER_CONFIG.constraints.maxRakeSize.wagons;
+    }
+    if (obj(body.loadingPoints)) {
+      for (const [plant, cfg] of Object.entries(body.loadingPoints)) {
+        OPTIMIZER_CONFIG.constraints.loadingPoints[plant] = OPTIMIZER_CONFIG.constraints.loadingPoints[plant] || { capacity: 0, sidings: 0, hourly: 0 };
+        OPTIMIZER_CONFIG.constraints.loadingPoints[plant].capacity = num(cfg.capacity) ?? OPTIMIZER_CONFIG.constraints.loadingPoints[plant].capacity;
+        OPTIMIZER_CONFIG.constraints.loadingPoints[plant].sidings = num(cfg.sidings) ?? OPTIMIZER_CONFIG.constraints.loadingPoints[plant].sidings;
+        OPTIMIZER_CONFIG.constraints.loadingPoints[plant].hourly = num(cfg.hourly) ?? OPTIMIZER_CONFIG.constraints.loadingPoints[plant].hourly;
+      }
+    }
+    if (obj(body.wagonTypes)) {
+      for (const [type, wc] of Object.entries(body.wagonTypes)) {
+        OPTIMIZER_CONFIG.constraints.wagonTypes[type] = OPTIMIZER_CONFIG.constraints.wagonTypes[type] || { capacity: 60, compatible: [] };
+        if (num(wc.capacity) !== undefined) OPTIMIZER_CONFIG.constraints.wagonTypes[type].capacity = num(wc.capacity);
+        if (arr(wc.compatible)) OPTIMIZER_CONFIG.constraints.wagonTypes[type].compatible = wc.compatible;
+      }
+    }
+
+    res.json({ ok: true, constraints: OPTIMIZER_CONFIG.constraints });
+  } catch (e) {
+    res.status(400).json({ error: 'Invalid payload', detail: e?.message || String(e) });
+  }
 });
 
 app.get('/optimizer/daily-plan', auth(), async (req, res) => {
@@ -2289,6 +3153,209 @@ app.get('/optimizer/daily-plan', auth(), async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Role-prefixed aliases for daily plan (manager/admin)
+['manager','admin'].forEach(prefix => {
+  app.get(`/${prefix}/optimizer/daily-plan`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/daily-plan';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enhanced Manager Alignment Dashboard Endpoint (Mock Intelligence Layer)
+// ---------------------------------------------------------------------------
+// Provides 360° view: plant->yard->customer flows, strategic priority match,
+// cost & sustainability alignment, timeline SLA, AI suggestions, policy checks,
+// goals vs targets, team responsibility matrix, decision impact preview, alerts.
+app.get('/optimizer/alignment/manager-dashboard', auth(), async (req, res) => {
+  try {
+    // Re-run (lightweight) optimizer to fabricate current rakes snapshot
+    const result = optimizeRakeFormation(OPTIMIZER_DATA.orders);
+    const rakes = result.optimal.rakes.slice(0, 10); // limit for dashboard
+    const now = Date.now();
+    const plants = [...new Set(rakes.map(r=> r.loadingPoint))];
+    const destinations = [...new Set(rakes.map(r=> r.destination))];
+
+    // 360° Flow Map (simplified)
+    const flows = rakes.map(r => ({
+      from: r.loadingPoint,
+      to: r.destination,
+      tons: r.loadedQty || r.totalTons || (r.wagons * 60 * r.utilization/100),
+      sla: r.slaFlag,
+      cost: r.cost,
+      emissions: r.emissions
+    }));
+
+    // Strategic priority (mock high-value contracts = destinations with 'BHILAI' or large tonnage)
+    const prioritizedOrders = flows
+      .filter(f => f.tons > 1800 || /BHILAI/i.test(f.to))
+      .map(f => ({ route: `${f.from}→${f.to}`, tons: Math.round(f.tons), reason: f.tons > 1800 ? 'High Volume' : 'Key Account' }));
+    const strategicAlignmentScore = prioritizedOrders.length ? Math.min(1, prioritizedOrders.length / (rakes.length || 1)) : 0.4;
+
+    // Cost alignment (freight vs demurrage/penalty risk estimation)
+    const totalFreight = rakes.reduce((s,r)=> s + r.cost, 0);
+    const demurrageRisk = Math.round(totalFreight * 0.02); // 2% exposure mock
+    const penaltyRisk = Math.round(totalFreight * 0.012); // 1.2% mock
+    const costSuggestions = [
+      { action: 'Resequence loading for high-tonnage rake', impact: '₹'+(Math.round(totalFreight*0.003)).toLocaleString()+' saved' },
+      { action: 'Combine partial rakes to reduce idle wagons', impact: 'Demurrage risk ↓' }
+    ];
+
+    // Sustainability alignment
+    const totalCO2 = rakes.reduce((s,r)=> s + (r.emissions || 0), 0);
+    const avgPerRake = totalCO2 / (rakes.length || 1);
+    const targetCO2 = totalCO2 * 0.92; // assume 8% reduction target
+    const ecoScore = Math.max(0, Math.min(1, (targetCO2 / (totalCO2 || 1))));
+    const rakeEmissions = rakes.map(r => ({ id: r.id, emissions: r.emissions, utilization: r.utilization }));
+
+    // Timeline & SLA (promised deadlines = ETA + buffer)
+    const timeline = rakes.map((r,i) => {
+      const start = new Date(now + i * 45*60000);
+      const eta = new Date(r.eta || (now + (i+2)*90*60000));
+      const promised = new Date(eta.getTime() + 60*60000); // promised 1h after ETA
+      const slaRisk = r.slaFlag ? 0.05 : 0.25 + (i*0.01);
+      return { id: r.id, start, eta, promised, slaRisk };
+    });
+
+    // AI Suggestions (mock reasoning)
+    const aiSuggestions = [
+      { id: 'SUG-1', message: 'Approve WG cluster to Bhilai now – saves ₹85K & 2h delay', impact: { cost: -85000, timeHrs: -2 }, actionType: 'approve' },
+      { id: 'SUG-2', message: 'Delay Rake '+(rakes[2]?.id||'RAK-3')+' by 30m – align with wagon release & avoid demurrage', impact: { demurrage: -12000 }, actionType: 'delay' },
+      { id: 'SUG-3', message: 'Merge two partial BOXN rakes to raise utilization to 93%', impact: { utilization: +4.5 }, actionType: 'merge' }
+    ];
+
+    // Policy / Compliance (mock rule checks)
+    const policy = {
+      rulesChecked: 18,
+      violations: rakes.filter(r=> r.utilization < 70).map(r=> ({ rake: r.id, rule: 'Min utilization 70%', current: r.utilization }))
+    };
+
+    // Goals & Targets
+    const goals = {
+      utilization: { value: result.optimal.summary.avgUtilization, target: 90, status: result.optimal.summary.avgUtilization >= 90 ? 'green':'amber' },
+      turnaround: { value: 7.8, target: 7, status: 7.8 <= 7 ? 'green':'amber' },
+      co2Reduction: { value: Math.round((1- (totalCO2/(totalCO2*1.08)))*100), target: 8, status: ecoScore >= 0.92 ? 'green':'amber' }
+    };
+
+    // Team / Role matrix (static mock)
+    const team = {
+      roles: [
+        { role: 'Plant Manager', user: 'plant_mgr@sail.test', responsibility: 'Production pacing' },
+        { role: 'Yard Supervisor', user: 'yard_sup@sail.test', responsibility: 'Wagon staging' },
+        { role: 'Logistics Coordinator', user: 'log_coord@sail.test', responsibility: 'Dispatch sequencing' },
+        { role: 'Sustainability Officer', user: 'green@sail.test', responsibility: 'Emission oversight' }
+      ]
+    };
+
+    // Decision impact templates
+    const decisionImpactTemplates = [
+      { action: 'Delay', effect: { slaRisk: '+3.5%', cost: '-₹25K', emission: '-2.1T' } },
+      { action: 'Approve', effect: { slaRisk: '-1.2%', cost: '+₹15K', emission: '+1.0T' } },
+      { action: 'Merge', effect: { utilization: '+4.0%', cost: '-₹40K', emission: '-3.3T' } }
+    ];
+
+    // Alerts (dynamic conditions)
+    const alerts = [];
+    if (policy.violations.length) alerts.push({ type: 'Utilization', severity: 'warning', message: `${policy.violations.length} rakes below minimum utilization.` });
+    if (demurrageRisk > 50000) alerts.push({ type: 'Cost', severity: 'info', message: 'Demurrage exposure trending high – review sequencing.' });
+    if (ecoScore < 0.9) alerts.push({ type: 'Sustainability', severity: 'risk', message: 'Eco-score below target; consider consolidating under-filled rakes.' });
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      map: { plants, destinations, flows },
+      strategic: { prioritizedOrders, strategicAlignmentScore },
+      cost: { totalFreight, demurrageRisk, penaltyRisk, suggestions: costSuggestions },
+      sustainability: { totalCO2, avgPerRake, targetCO2, ecoScore, rakeEmissions },
+      timeline,
+      aiSuggestions,
+      policy,
+      goals,
+      team,
+      decisionImpactTemplates,
+      alerts
+    });
+  } catch (e) {
+    console.error('manager-dashboard error', e);
+    res.status(500).json({ error: 'Failed to build manager alignment dashboard', detail: e?.message || String(e) });
+  }
+});
+
+['manager','admin'].forEach(prefix => {
+  app.get(`/${prefix}/optimizer/alignment/manager-dashboard`, auth(prefix === 'admin' ? 'admin' : undefined), (req,res)=> {
+    req.url = '/optimizer/alignment/manager-dashboard';
+    app._router.handle(req,res,()=>{});
+  });
+});
+
+// Export endpoints for manager dashboard snapshot (CSV / PDF)
+app.get('/optimizer/alignment/export.csv', auth(), async (req,res)=> {
+  try {
+    const dashRes = await fetch('http://localhost:'+ (process.env.PORT||4000) +'/optimizer/alignment/manager-dashboard', { headers:{ Authorization: req.headers.authorization||'' }});
+    const data = await dashRes.json();
+    const rows = [
+      'Section,Key,Value',
+      `Strategic,AlignmentScore,${data.strategic?.strategicAlignmentScore}`,
+      ...data.map?.flows?.map(f=> `Flow,${f.from}->${f.to},${Math.round(f.tons)}T @₹${f.cost}`) || [],
+      ...data.cost?.suggestions?.map(s=> `CostSuggestion,${s.action},${s.impact}`) || [],
+      ...data.aiSuggestions?.map(a=> `AISuggestion,${a.id},${a.message}`) || [],
+      ...data.alerts?.map(a=> `Alert,${a.type},${a.message}`) || []
+    ];
+    res.setHeader('Content-Type','text/csv');
+    res.setHeader('Content-Disposition','attachment; filename="alignment-dashboard.csv"');
+    res.send(rows.join('\n'));
+  } catch(e) {
+    res.status(500).json({ error:'Failed to export CSV', detail: e?.message||String(e) });
+  }
+});
+
+app.get('/optimizer/alignment/export.pdf', auth(), async (req,res)=> {
+  try {
+    const dashRes = await fetch('http://localhost:'+ (process.env.PORT||4000) +'/optimizer/alignment/manager-dashboard', { headers:{ Authorization: req.headers.authorization||'' }});
+    const data = await dashRes.json();
+    res.setHeader('Content-Type','application/pdf');
+    res.setHeader('Content-Disposition','attachment; filename="alignment-dashboard.pdf"');
+    const doc = new PDFDocument({ size:'A4', margin:40 });
+    doc.pipe(res);
+    doc.fontSize(16).text('Manager Alignment Dashboard Snapshot');
+    doc.moveDown(0.5).fontSize(9).fillColor('#555').text(new Date().toLocaleString());
+    doc.moveDown(0.8).fillColor('#000');
+    const section = (title) => { doc.moveDown(0.6).fontSize(12).fillColor('#111827').text(title); doc.moveDown(0.2).fontSize(9).fillColor('#374151'); };
+    section('Strategic Priority');
+    doc.text('Alignment Score: '+ Math.round((data.strategic?.strategicAlignmentScore||0)*100)+'%');
+    section('Flows');
+    (data.map?.flows||[]).slice(0,20).forEach(f=> doc.text(`${f.from} -> ${f.to}  ${Math.round(f.tons)}T  Cost ₹${f.cost}  CO₂ ${f.emissions?.toFixed?.(1)||0}T`));
+    section('Cost Suggestions');
+    (data.cost?.suggestions||[]).forEach(s=> doc.text(`• ${s.action} (${s.impact})`));
+    section('AI Suggestions');
+    (data.aiSuggestions||[]).forEach(a=> doc.text(`• ${a.message}`));
+    section('Alerts');
+    (data.alerts||[]).forEach(a=> doc.text(`• [${a.type}] ${a.message}`));
+    doc.end();
+  } catch(e) {
+    res.status(500).json({ error:'Failed to export PDF', detail: e?.message||String(e) });
+  }
+});
+
+// Periodic push over WebSocket (Socket.IO namespace)
+setInterval(async ()=> {
+  try {
+    const result = optimizeRakeFormation(OPTIMIZER_DATA.orders); // lightweight call
+    const summary = result.optimal.summary;
+    const avgUtil = summary.avgUtilization;
+    const cost = summary.totalCost;
+    const co2 = summary.totalEmissions ?? summary.carbonFootprint ?? 0;
+    // Simple alignment score: blend of utilization and inverse cost growth (normalized)
+    const utilScore = avgUtil / 100; // 0..1
+    const costBaseline = 1_000_000; // arbitrary normalization anchor
+    const costScore = Math.max(0, Math.min(1, 1 - (cost / (costBaseline*2))));
+    const alignmentScore = Number(((utilScore*0.7 + costScore*0.3)).toFixed(4));
+    const sample = { avgUtil, cost, co2, alignmentScore, ts: Date.now() };
+    alignmentNS.emit('heartbeat', sample);
+  } catch(e) {
+    // silent
+  }
+}, 10000).unref();
 
 function generateScenarioRecommendations(baseline, scenario, disruptions) {
   const recommendations = [];
@@ -2370,8 +3437,34 @@ function analyzeProductionAlignment() {
   const railCoverage = Math.min(railCapacity / totalOrderVolume, 1.0);
   const roadRequired = totalOrderVolume - (railCapacity * 0.9); // 90% rail utilization
   
+  // Derive additional summary metrics for legacy/report UI compatibility
+  const wagonUtil = calculateWagonUtilization();
+  const capacityGap = Math.max(0, totalOrderVolume - railCapacity); // demand exceeding theoretical rail capacity
+  const alignmentScore = (() => {
+    // Blend of rail coverage and effective utilization penalized by capacity gap ratio
+    const cov = railCoverage; // 0..1
+    const util = wagonUtil.utilization / 100; // 0..1
+    const gapPenalty = capacityGap > 0 ? Math.min(0.3, capacityGap / (totalOrderVolume || 1)) : 0;
+    return Math.max(0, Math.min(1, (cov * 0.55 + util * 0.45) * (1 - gapPenalty)));
+  })();
+
+  const recommendationsText = recommendations.map(r => `Increase ${r.product} at ${r.plant} by ${r.quantity}T (Priority: ${r.priority}) – ${r.rationale}`);
+  if (capacityGap > 0 && recommendationsText.length === 0) {
+    recommendationsText.push(`Capacity gap of ${capacityGap}T detected – evaluate supplemental road logistics or production shift.`);
+  }
+  if (wagonUtil.idle > 50) {
+    recommendationsText.push(`Idle wagons: ${wagonUtil.idle}. Consider redeployment or leasing to improve utilization.`);
+  }
+
   return {
     productionRecommendations: recommendations,
+    recommendations: recommendationsText, // compatibility for report page expecting simple string list
+    summary: {
+      totalProduction: totalOrderVolume,
+      availableWagons: wagonUtil.total,
+      capacityGap,
+      alignmentScore
+    },
     modalSplit: {
       railCapacityT: railCapacity,
       totalDemandT: totalOrderVolume,
@@ -2384,7 +3477,7 @@ function analyzeProductionAlignment() {
       }
     },
     utilization: {
-      wagonUtilization: calculateWagonUtilization(),
+      wagonUtilization: wagonUtil,
       idleAnalysis: analyzeIdleCapacity()
     }
   };
@@ -2457,8 +3550,101 @@ app.get('/optimizer/export/daily-plan.csv', auth(), (req, res) => {
   res.send(`${csvHeaders}\n${csvRows}`);
 });
 
+// PDF export of the daily dispatch plan (for yard managers)
+app.get('/optimizer/export/daily-plan.pdf', auth(), (req, res) => {
+  const result = optimizeRakeFormation(OPTIMIZER_DATA.orders);
+  const rakes = result.optimal.rakes;
+  const summary = result.optimal.summary;
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="daily-rake-plan.pdf"');
+  const doc = new PDFDocument({ size: 'A4', margin: 40 });
+  doc.pipe(res);
+
+  // Header
+  doc.fontSize(18).text('Daily Dispatch Plan', { align: 'left' });
+  doc.moveDown(0.2);
+  doc.fontSize(10).fillColor('#666').text(`Date: ${new Date().toLocaleString()}`);
+  doc.moveDown(0.6).fillColor('#000');
+
+  // KPIs
+  const kpiY = doc.y;
+  const kpiBox = (x, title, value) => {
+    doc.rect(x, kpiY, 160, 48).stroke('#e5e7eb');
+    doc.fontSize(9).fillColor('#6b7280').text(title, x + 8, kpiY + 8);
+    doc.fontSize(14).fillColor('#111827').text(String(value), x + 8, kpiY + 24);
+  };
+  kpiBox(40, 'Total Rakes', rakes.length);
+  kpiBox(210, 'Avg Utilization', `${summary.avgUtilization.toFixed(1)}%`);
+  kpiBox(380, 'Total Cost', `₹${summary.totalCost.toLocaleString()}`);
+  doc.moveDown(4);
+
+  // Table header
+  const startY = doc.y + 10;
+  const cols = [
+    { key: 'id', label: 'Rake ID', w: 70 },
+    { key: 'cargo', label: 'Cargo', w: 90 },
+    { key: 'loadingPoint', label: 'Loading Point', w: 90 },
+    { key: 'destination', label: 'Destination', w: 90 },
+    { key: 'wagons', label: 'Wagons', w: 60 },
+    { key: 'eta', label: 'ETA', w: 100 },
+    { key: 'cost', label: 'Cost', w: 70 },
+    { key: 'slaFlag', label: 'SLA', w: 40 },
+  ];
+
+  let x = 40; let y = startY;
+  doc.fontSize(10).fillColor('#374151');
+  cols.forEach(c => { doc.text(c.label, x, y, { width: c.w }); x += c.w; });
+  y += 16; x = 40; doc.moveTo(40, y).lineTo(555, y).stroke('#e5e7eb'); y += 6;
+
+  // Rows
+  doc.fontSize(9).fillColor('#111827');
+  rakes.forEach((r, idx) => {
+    if (y > 770) { doc.addPage(); y = 40; x = 40; }
+    const values = [
+      r.id,
+      r.cargo,
+      r.loadingPoint,
+      r.destination,
+      `${r.wagons} ${r.wagonType}`,
+      new Date(r.eta).toLocaleString(),
+      `₹${r.cost.toLocaleString()}`,
+      r.slaFlag ? 'YES' : 'NO'
+    ];
+    values.forEach((val, i) => { const c = cols[i]; doc.text(String(val), x, y, { width: c.w }); x += c.w; });
+    x = 40; y += 16; doc.moveTo(40, y).lineTo(555, y).stroke('#f3f4f6'); y += 2;
+  });
+
+  doc.end();
+});
+
+// Basic root & health endpoints for diagnostics (non-sensitive)
+app.get('/', (req, res) => {
+  res.json({ ok: true, service: 'qsteel-api', time: Date.now() });
+});
+app.get('/healthz', (req, res) => res.json({ ok: true }));
+
+// Global error / rejection handlers to surface hidden crashes
+process.on('uncaughtException', err => {
+  console.error('[FATAL][uncaughtException]', err);
+});
+process.on('unhandledRejection', err => {
+  console.error('[FATAL][unhandledRejection]', err);
+});
+
 const PORT = process.env.PORT || 4000;
-httpServer.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
+console.log('[BOOT] initiating server start on port', PORT);
+httpServer.on('error', err => {
+  console.error('[SERVER][error]', err);
+});
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`[BOOT] listening on http://localhost:${PORT}`);
   if (!allowAll) console.log('CORS origins allowed:', CORS_ORIGINS.join(', '));
 });
+
+// Heartbeat log (unref so it doesn't keep process alive if something else ends it)
+setInterval(() => {
+  if (process.env.API_HEARTBEAT === '1') {
+    console.log('[HEARTBEAT]', new Date().toISOString());
+  }
+}, 60000).unref();

@@ -538,97 +538,112 @@ export default function Assistant() {
   ];
 
   return (
-    <div className="fixed bottom-4 right-4">
+    <>
       {open && (
-        <Card className="w-[500px] h-[600px] mb-3 flex flex-col">
-          <div className="p-4 border-b bg-gradient-to-r from-blue-50 to-green-50">
-            <h3 className="font-bold text-gray-900">🤖 AI Decision Co-Pilot</h3>
-            <p className="text-xs text-gray-600 mt-1">Your intelligent logistics assistant</p>
-          </div>
-          
-          <CardContent className="flex-1 flex flex-col p-0">
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.map((message) => (
-                <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] p-3 rounded-lg text-sm ${
-                    message.type === 'user' 
-                      ? 'bg-blue-500 text-white' 
-                      : 'bg-gray-50 border border-gray-200'
-                  }`}>
-                    <MessageContent message={message} onAction={runAction} />
-                    <div className="text-xs opacity-70 mt-2">
-                      {message.timestamp.toLocaleTimeString()}
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px]" onClick={() => setOpen(false)} />
+          <div role="dialog" aria-modal="true" aria-label="AI Decision Co-Pilot" className="relative z-10 w-full max-w-[95vw] md:max-w-[720px]">
+            <Card className="w-full h-[85vh] md:h-[70vh] max-h-[90vh] md:max-h-[80vh] rounded-lg overflow-hidden shadow-2xl flex flex-col">
+            <div className="p-4 border-b bg-gradient-to-r from-blue-50 to-green-50 flex items-start justify-between gap-2">
+              <h3 className="font-bold text-gray-900">🤖 AI Decision Co-Pilot</h3>
+              <p className="text-xs text-gray-600 mt-1">Your intelligent logistics assistant</p>
+              <button
+                aria-label="Close"
+                onClick={() => setOpen(false)}
+                className="ml-auto inline-flex items-center justify-center rounded-md px-2 py-1 text-gray-600 hover:text-gray-900 hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            <CardContent className="flex-1 flex flex-col p-0 min-h-0">
+              <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain">
+                {messages.map((message) => (
+                  <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[85%] p-3 rounded-lg text-sm ${
+                      message.type === 'user'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-gray-50 border border-gray-200'
+                    }`}>
+                      <MessageContent message={message} onAction={runAction} />
+                      <div className="text-xs opacity-70 mt-2">
+                        {message.timestamp.toLocaleTimeString()}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-              
-              {loading && (
-                <div className="flex justify-start">
-                  <div className="max-w-[85%] p-3 rounded-lg bg-gray-50 border border-gray-200">
-                    <div className="flex items-center gap-2">
-                      <div className="flex space-x-1">
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.1s'}}></div>
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{animationDelay: '0.2s'}}></div>
+                ))}
+
+                {loading && (
+                  <div className="flex justify-start">
+                    <div className="max-w-[85%] p-3 rounded-lg bg-gray-50 border border-gray-200">
+                      <div className="flex items-center gap-2">
+                        <div className="flex space-x-1">
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                        </div>
+                        <span className="text-sm text-gray-600">AI is thinking...</span>
                       </div>
-                      <span className="text-sm text-gray-600">AI is thinking...</span>
                     </div>
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </div>
+
+              {messages.length <= 1 && (
+                <div className="px-4 py-3 border-t border-b bg-gray-50">
+                  <div className="text-xs font-medium text-gray-700 mb-2">Quick Actions:</div>
+                  <div className="flex flex-wrap gap-1">
+                    {quickActions.slice(0, 3).map((action, idx) => (
+                      <Button
+                        key={idx}
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setInput(action.text)}
+                        className="text-xs bg-white hover:bg-blue-50 h-8"
+                      >
+                        {action.icon}
+                      </Button>
+                    ))}
                   </div>
                 </div>
               )}
-              
-              <div ref={messagesEndRef} />
-            </div>
 
-            {messages.length <= 1 && (
-              <div className="px-4 py-3 border-t border-b bg-gray-50">
-                <div className="text-xs font-medium text-gray-700 mb-2">Quick Actions:</div>
-                <div className="flex flex-wrap gap-1">
-                  {quickActions.slice(0, 3).map((action, idx) => (
-                    <Button
-                      key={idx}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setInput(action.text)}
-                      className="text-xs bg-white hover:bg-blue-50 h-8"
-                    >
-                      {action.icon}
-                    </Button>
-                  ))}
+              <div className="p-4 border-t">
+                <div className="flex gap-2">
+                  <Textarea
+                    value={input}
+                    onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInput(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Ask me about optimization, scenarios, performance..."
+                    className="flex-1 min-h-[50px] resize-none text-sm"
+                    disabled={loading}
+                  />
+                  <Button
+                    onClick={sendMessage}
+                    disabled={!input.trim() || loading}
+                    size="sm"
+                    className="px-4"
+                  >
+                    ➤
+                  </Button>
                 </div>
               </div>
-            )}
-            
-            <div className="p-4 border-t">
-              <div className="flex gap-2">
-                <Textarea
-                  value={input}
-                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInput(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="Ask me about optimization, scenarios, performance..."
-                  className="flex-1 min-h-[50px] resize-none text-sm"
-                  disabled={loading}
-                />
-                <Button 
-                  onClick={sendMessage}
-                  disabled={!input.trim() || loading}
-                  size="sm"
-                  className="px-4"
-                >
-                  ➤
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+            </Card>
+          </div>
+        </div>
       )}
-      <button 
-        onClick={() => setOpen(v => !v)} 
-        className="rounded-full bg-gradient-to-r from-blue-500 to-green-500 text-white px-6 py-3 shadow-lg hover:shadow-xl transition-shadow font-medium"
-      >
-        🤖 AI Co-Pilot
-      </button>
-    </div>
+
+      <div className="fixed left-1/2 -translate-x-1/2 z-40 bottom-[calc(env(safe-area-inset-bottom)+16px)] md:bottom-6">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="rounded-full bg-gradient-to-r from-blue-500 to-green-500 text-white px-6 py-3 shadow-lg hover:shadow-xl transition-shadow font-medium"
+        >
+          🤖 AI Co-Pilot
+        </button>
+      </div>
+    </>
   );
 }
