@@ -84,6 +84,7 @@ export default function Nav() {
                   <Link href="/admin/rbac">RBAC</Link>
                   <Link href="/admin/integrations">Integrations</Link>
                   <Link href="/admin/audit-reports">Audit</Link>
+                  <Link href="/admin/analytics">Analytics</Link>
                 </>
               )}
               {role==='cmo' && (

@@ -5,6 +5,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, 
   PieChart, Pie, Cell, ResponsiveContainer, ScatterChart, Scatter
 } from 'recharts';
+import { trackAction } from '@/lib/analytics';
 
 const API_BASE = process.env.NODE_ENV === 'production' 
   ? 'https://qsteel-api.onrender.com' 
@@ -101,6 +102,7 @@ const OptimizerPage = () => {
   };
 
   const runOptimization = async () => {
+    try { trackAction('run_optimization'); } catch {}
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -137,6 +139,7 @@ const OptimizerPage = () => {
   };
 
   const runAdvancedOptimization = async () => {
+    try { trackAction('run_advanced_optimization'); } catch {}
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -251,6 +254,7 @@ const OptimizerPage = () => {
   }
 
   const runScenarioAnalysis = async () => {
+    try { trackAction('run_scenario_analysis', { scenario: scenarioConfig }); } catch {}
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
@@ -304,6 +308,7 @@ const OptimizerPage = () => {
 
   const exportDailyPlan = () => {
     const token = localStorage.getItem('token');
+    try { trackAction('export_daily_plan_csv'); } catch {}
     window.open(`${API_BASE}/optimizer/export/daily-plan.csv?token=${token}`, '_blank');
   };
 

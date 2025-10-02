@@ -225,3 +225,21 @@ model AllocationAudit {
 
   @@index([allocId, ts])
 }
+
+// ------------------------------
+// Analytics Events (optional)
+// ------------------------------
+
+model Event {
+  id     Int      @id @default(autoincrement())
+  ts     DateTime @default(now())
+  user   String
+  role   String
+  type   String
+  page   String?
+  action String?
+  meta   Json?
+
+  @@index([ts])
+  @@index([role, ts])
+}

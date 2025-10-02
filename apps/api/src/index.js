@@ -26,6 +26,16 @@ import { promisify } from 'util';
 const app = express();
 const httpServer = createServer(app);
 const optimizer = new RakeOptimizer();
+// Lightweight analytics (in-memory, optional Prisma persistence)
+const ROUTE_STATS = new Map(); // key: path -> { count, byRole: Map(role->count), last: number }
+const EVENTS = []; // bounded event log
+const MAX_EVENTS = 10000;
+const WS_STATS = {
+  totalConnections: 0,
+  currentConnections: 0,
+  byNamespace: {}, // ns -> { total, current }
+  durationsMs: [], // recent session durations
+};
 
 // CORS configuration (HTTP + WebSocket) driven by env
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || '')
@@ -52,6 +62,33 @@ const io = new SocketIOServer(httpServer, {
 const alignmentNS = io.of('/ws/alignment');
 alignmentNS.on('connection', socket => {
   socket.emit('hello', { message: 'Connected to alignment stream' });
+  // Track WS connection analytics for namespace
+  try {
+    WS_STATS.totalConnections += 1;
+    WS_STATS.currentConnections += 1;
+    WS_STATS.byNamespace['/ws/alignment'] = WS_STATS.byNamespace['/ws/alignment'] || { total: 0, current: 0 };
+    WS_STATS.byNamespace['/ws/alignment'].total += 1;
+    WS_STATS.byNamespace['/ws/alignment'].current += 1;
+    // Optional role attribution from auth token in query (?token=...)
+    let role = 'guest';
+    try {
+      const t = socket.handshake?.auth?.token || socket.handshake?.query?.token;
+      if (typeof t === 'string' && t) {
+        const payload = jwt.verify(t, JWT_SECRET);
+        role = payload?.role || 'guest';
+      }
+    } catch {}
+    const started = Date.now();
+    socket.on('disconnect', () => {
+      WS_STATS.currentConnections = Math.max(0, WS_STATS.currentConnections - 1);
+      WS_STATS.byNamespace['/ws/alignment'].current = Math.max(0, WS_STATS.byNamespace['/ws/alignment'].current - 1);
+      const dur = Date.now() - started;
+      WS_STATS.durationsMs.push(dur);
+      if (WS_STATS.durationsMs.length > 1000) WS_STATS.durationsMs.shift();
+    });
+    // Record lightweight ws_activity event
+    try { pushEvent({ type: 'ws_connect', page: '/ws/alignment', role, meta: { ns: '/ws/alignment' }, ts: Date.now() }); } catch {}
+  } catch {}
 });
 
 app.set('trust proxy', 1);
@@ -157,6 +194,22 @@ app.use((req, res, next) => {
   next();
 });
 app.use(morgan(':id :method :url :status :response-time ms'));
+
+// Route usage analytics: record per-path counters with role attribution (if req.user set by route auth)
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    try {
+      const key = req.path || req.originalUrl || 'unknown';
+      const role = (req.user && req.user.role) || 'guest';
+      const item = ROUTE_STATS.get(key) || { count: 0, byRole: new Map(), last: 0, totalTimeMs: 0 };
+      item.count += 1; item.last = Date.now(); item.totalTimeMs += (Date.now() - start);
+      const rc = item.byRole.get(role) || 0; item.byRole.set(role, rc + 1);
+      ROUTE_STATS.set(key, item);
+    } catch {}
+  });
+  next();
+});
 
 // ==== CMO Mock Stores (in-memory) ====
 const ALLOCATIONS = new Map(); // id -> { id, status, payload, createdBy, createdAt, approvedBy?, approvedAt? }
@@ -912,6 +965,7 @@ app.get('/yard/safety/export.csv', auth('yard'), (req, res) => {
   const csv = [meta, header, ...rows].join('\n');
   res.setHeader('Content-Type','text/csv');
   res.setHeader('Content-Disposition','attachment; filename="yard-safety-incidents.csv"');
+  try { pushEvent({ type: 'export', page: '/yard/safety', action: 'export_csv', role: req.user?.role||'yard', user: req.user?.email||'', meta: { count: rows.length } , ts: Date.now()}); } catch {}
   res.send(csv);
 });
 
@@ -947,6 +1001,7 @@ app.get('/yard/wagon-health/export.csv', auth('yard'), (req, res) => {
   const csv = [meta, header, ...rows].join('\n');
   res.setHeader('Content-Type','text/csv');
   res.setHeader('Content-Disposition','attachment; filename="wagon-health.csv"');
+  try { pushEvent({ type: 'export', page: '/yard/wagon-health', action: 'export_csv', role: req.user?.role||'yard', user: req.user?.email||'', meta: { total: kpis.total } , ts: Date.now()}); } catch {}
   res.send(csv);
 });
 
@@ -2305,6 +2360,22 @@ io.on('connection', (socket) => {
   socket.on('chat:message', (msg) => {
     io.emit('chat:message', { ...msg, ts: Date.now(), id: crypto.randomUUID?.() || String(Date.now()) });
   });
+  // Track global namespace connections
+  try {
+    WS_STATS.totalConnections += 1;
+    WS_STATS.currentConnections += 1;
+    WS_STATS.byNamespace['/'] = WS_STATS.byNamespace['/'] || { total: 0, current: 0 };
+    WS_STATS.byNamespace['/'].total += 1;
+    WS_STATS.byNamespace['/'].current += 1;
+    const started = Date.now();
+    socket.on('disconnect', () => {
+      WS_STATS.currentConnections = Math.max(0, WS_STATS.currentConnections - 1);
+      WS_STATS.byNamespace['/'].current = Math.max(0, WS_STATS.byNamespace['/'].current - 1);
+      const dur = Date.now() - started;
+      WS_STATS.durationsMs.push(dur);
+      if (WS_STATS.durationsMs.length > 1000) WS_STATS.durationsMs.shift();
+    });
+  } catch {}
 });
 
 // =========================
@@ -2915,6 +2986,91 @@ app.get('/reports/audit.pdf', auth('admin'), (req, res) => {
   });
 
   doc.end();
+});
+
+// -----------------------------
+// Analytics & Events (MVP)
+// -----------------------------
+function pushEvent(evt) {
+  EVENTS.push(evt);
+  if (EVENTS.length > MAX_EVENTS) EVENTS.shift();
+  if (prisma) {
+    (async()=>{
+      try { await prisma.event.create({ data: { ts: new Date(evt.ts), user: evt.user||'', role: evt.role||'guest', type: evt.type||'', page: evt.page||'', action: evt.action||'', meta: evt.meta||{} } }); } catch {}
+    })();
+  }
+}
+
+// Best-effort JWT parse for optional auth on /events
+function tryParseAuth(req) {
+  try {
+    const hdr = req.headers.authorization || '';
+    const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : '';
+    if (!token) return null;
+    return jwt.verify(token, JWT_SECRET);
+  } catch { return null; }
+}
+
+// Ingest events (page_view, action_click, export, ws_activity)
+app.post('/events', (req, res) => {
+  try {
+    const schema = z.object({
+      type: z.string(),
+      page: z.string().optional(),
+      action: z.string().optional(),
+      meta: z.any().optional(),
+      ts: z.number().optional(),
+    });
+    const parsed = schema.safeParse(req.body||{});
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+    const user = tryParseAuth(req);
+    const evt = { ...parsed.data, ts: parsed.data.ts || Date.now(), user: user?.email || '', role: user?.role || 'guest', ip: req.ip };
+    pushEvent(evt);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_record', detail: e?.message || String(e) });
+  }
+});
+
+// Admin usage snapshot: route counters, roles, WS stats, recent events
+app.get('/admin/analytics/usage', auth('admin'), (req, res) => {
+  try {
+    const routes = Array.from(ROUTE_STATS.entries()).map(([path, v]) => ({
+      path,
+      count: v.count,
+      avgMs: v.count ? Math.round(v.totalTimeMs / v.count) : 0,
+      byRole: Array.from(v.byRole.entries()).map(([role, c]) => ({ role, count: c }))
+    })).sort((a,b)=> b.count - a.count).slice(0, 200);
+    const roleAgg = {};
+    routes.forEach(r => r.byRole.forEach(({role, count}) => { roleAgg[role] = (roleAgg[role]||0) + count; }));
+    const since = Date.now() - 24*3600*1000;
+    const recent = EVENTS.filter(e => e.ts >= since);
+    const eventCounts = recent.reduce((acc,e)=>{ acc[e.type] = (acc[e.type]||0)+1; return acc; },{});
+    const ws = {
+      totalConnections: WS_STATS.totalConnections,
+      currentConnections: WS_STATS.currentConnections,
+      byNamespace: WS_STATS.byNamespace,
+      avgSessionSec: WS_STATS.durationsMs.length ? Math.round(WS_STATS.durationsMs.reduce((a,b)=>a+b,0)/WS_STATS.durationsMs.length/1000) : 0
+    };
+    res.json({ routes, roles: roleAgg, events: { last24h: eventCounts, recent: recent.slice(-100).reverse() }, ws });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_aggregate', detail: e?.message || String(e) });
+  }
+});
+
+// Admin CSV export of recent events
+app.get('/admin/analytics/events.csv', auth('admin'), (req, res) => {
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit || 1000)));
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const items = EVENTS.slice(-limit).reverse();
+  const headers = ['ts','user','role','type','page','action','meta'];
+  const rows = items.map(e => [new Date(e.ts).toISOString(), e.user, e.role, e.type, e.page||'', e.action||'', JSON.stringify(e.meta||{})].map(esc).join(','));
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="events.csv"');
+  res.send(headers.join(',') + '\n' + rows.join('\n'));
 });
 
 // API Endpoints for Advanced Optimizer
@@ -3749,6 +3905,7 @@ app.get('/optimizer/export/daily-plan.csv', auth(), (req, res) => {
   
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="daily-rake-plan.csv"');
+  try { pushEvent({ type: 'export', page: '/optimizer', action: 'daily_plan_csv', role: req.user?.role||'guest', user: req.user?.email||'', meta: { rakes: result.optimal.rakes.length }, ts: Date.now() }); } catch {}
   res.send(`${csvHeaders}\n${csvRows}`);
 });
 
@@ -3818,6 +3975,7 @@ app.get('/optimizer/export/daily-plan.pdf', auth(), (req, res) => {
   });
 
   doc.end();
+  try { pushEvent({ type: 'export', page: '/optimizer', action: 'daily_plan_pdf', role: req.user?.role||'guest', user: req.user?.email||'', meta: { rakes: rakes.length }, ts: Date.now() }); } catch {}
 });
 
 // Basic root & health endpoints for diagnostics (non-sensitive)
