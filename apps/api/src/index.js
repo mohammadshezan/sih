@@ -158,6 +158,10 @@ app.use((req, res, next) => {
 });
 app.use(morgan(':id :method :url :status :response-time ms'));
 
+// ==== CMO Mock Stores (in-memory) ====
+const ALLOCATIONS = new Map(); // id -> { id, status, payload, createdBy, createdAt, approvedBy?, approvedAt? }
+const ALLOC_AUDIT = []; // { allocId, user, action, diff, ts }
+
 // Friendly root route
 app.get('/', (req, res) => {
   const base = `${req.protocol}://${req.get('host')}`;
@@ -326,13 +330,14 @@ const users = [
   { id: 1, email: 'admin@sail.test', role: 'admin' },
   { id: 2, email: 'manager@sail.test', role: 'manager' },
   { id: 3, email: 'yard@sail.test', role: 'yard' },
- 
+  { id: 4, email: 'cmo@sail.test', role: 'cmo' },
 ];
 // OTP recipient overrides (send OTP to these real inboxes for given usernames)
 const OTP_RECIPIENT_MAP = {
   'admin@sail.test': 'head.qsteel@gmail.com',
   'manager@sail.test': 'mohammadshezanekram@gmail.com',
-  'yard@sail.test': 'khalifa182005@gmail.com'
+  'yard@sail.test': 'khalifa182005@gmail.com',
+  'cmo@sail.test': 'head.qsteel@gmail.com'
 };
 // Allow customer email pattern for demo
 function resolveUserByEmail(email) {
@@ -1861,6 +1866,122 @@ app.post('/yard/confirm-creation', auth('yard'), async (req, res) => {
   res.json({ ok: true });
 });
 
+// =========================
+// CMO APIs (mock)
+// =========================
+app.get('/api/v1/cmo/summary', auth('cmo'), (req, res) => {
+  const today = new Date().toISOString().slice(0,10);
+  const backlog = (MOCK_DATA.rakes||[]).filter(r=> String(r.status||'').toLowerCase()!=='dispatched').length;
+  const kpis = { backlog, stockyardUtil: 0.72, slaRisk: 0.18, ecoScore: 0.66, date: today };
+  res.json({ kpis, alerts: MOCK_DATA.alerts?.slice(0,5) || [] });
+});
+
+app.get('/api/v1/cmo/allocations', auth('cmo'), (req,res) => {
+  const list = Array.from(ALLOCATIONS.values()).sort((a,b)=> b.createdAt - a.createdAt);
+  res.json({ allocations: list });
+});
+
+app.post('/api/v1/cmo/allocations/draft', auth('cmo'), (req,res) => {
+  const { order_ids = [], stockyard_id = '', notes = '' } = req.body || {};
+  const id = 'ALC' + Math.floor(Math.random()*1e6).toString().padStart(6,'0');
+  const record = { id, status: 'draft', payload: { order_ids, stockyard_id, notes }, createdBy: req.user?.email, createdAt: Date.now() };
+  ALLOCATIONS.set(id, record);
+  ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'create_draft', diff: record.payload, ts: Date.now() });
+  res.json({ ok:true, draft: record });
+});
+
+app.post('/api/v1/cmo/allocations/:id/submit', auth('cmo'), (req,res) => {
+  const id = req.params.id;
+  const r = ALLOCATIONS.get(id);
+  if (!r) return res.status(404).json({ error: 'not_found' });
+  r.status = 'submitted';
+  ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'submit', diff: {}, ts: Date.now() });
+  res.json({ ok:true, allocation: r });
+});
+
+app.post('/api/v1/cmo/allocations/:id/approve', auth(), (req,res) => {
+  // allow cmo or admin to approve
+  if (!['cmo','admin'].includes(req.user?.role)) return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const r = ALLOCATIONS.get(id);
+  if (!r) return res.status(404).json({ error: 'not_found' });
+  r.status = 'approved';
+  r.approvedBy = req.user?.email; r.approvedAt = Date.now();
+  ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'approve', diff: {}, ts: Date.now() });
+  res.json({ ok:true, allocation: r });
+});
+
+// Reject endpoint with optional reason
+app.post('/api/v1/cmo/allocations/:id/reject', auth(), (req,res) => {
+  if (!['cmo','admin'].includes(req.user?.role)) return res.status(403).json({ error: 'Forbidden' });
+  const id = req.params.id;
+  const r = ALLOCATIONS.get(id);
+  if (!r) return res.status(404).json({ error: 'not_found' });
+  const reason = String(req.body?.reason || '').slice(0, 500);
+  r.status = 'rejected';
+  r.rejectedBy = req.user?.email; r.rejectedAt = Date.now(); r.rejectReason = reason;
+  ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'reject', diff: { reason }, ts: Date.now() });
+  res.json({ ok:true, allocation: r });
+});
+
+// Allocation detail with recent audit trail
+app.get('/api/v1/cmo/allocations/:id', auth('cmo'), (req,res) => {
+  const id = req.params.id;
+  const r = ALLOCATIONS.get(id);
+  if (!r) return res.status(404).json({ error: 'not_found' });
+  const audit = ALLOC_AUDIT.filter(a => a.allocId === id).slice(-50).reverse();
+  res.json({ allocation: r, audit });
+});
+
+// Audit with simple filters: from,to,allocId,action,limit
+app.get('/api/v1/cmo/audit', auth('cmo'), (req,res) => {
+  try {
+    const from = req.query.from ? new Date(String(req.query.from)).getTime() : null;
+    const to = req.query.to ? new Date(String(req.query.to)).getTime() : null;
+    const allocId = req.query.allocId ? String(req.query.allocId) : null;
+    const action = req.query.action ? String(req.query.action) : null;
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 200)));
+    let items = ALLOC_AUDIT;
+    if (allocId) items = items.filter(i => i.allocId === allocId);
+    if (action) items = items.filter(i => i.action === action);
+    if (from) items = items.filter(i => i.ts >= from);
+    if (to) items = items.filter(i => i.ts <= to);
+    items = items.slice(-limit).reverse();
+    res.json({ audit: items, count: items.length });
+  } catch (e) {
+    res.status(400).json({ error: 'invalid_filter', detail: e?.message || String(e) });
+  }
+});
+
+// CSV export for CMO audit
+app.get('/api/v1/cmo/audit.csv', auth('cmo'), (req,res) => {
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const headers = ['allocId','user','action','ts','reason','diff'];
+  const items = ALLOC_AUDIT.slice(-500).reverse();
+  const rows = items.map(i => [i.allocId, i.user, i.action, new Date(i.ts).toISOString(), (i.diff?.reason)||'', JSON.stringify(i.diff||{})].map(esc).join(','));
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="cmo-audit.csv"');
+  res.send(headers.join(',') + '\n' + rows.join('\n'));
+});
+
+// Customer Tracking (mock)
+app.get('/api/v1/customer/orders/:orderId/tracking', auth(), (req,res) => {
+  // allow role=customer, manager, admin
+  if (!['customer','manager','admin'].includes(req.user?.role)) return res.status(403).json({ error: 'Forbidden' });
+  const orderId = req.params.orderId;
+  const rake = (MOCK_DATA.rakes||[])[Math.floor(Math.random()*(MOCK_DATA.rakes?.length||1))];
+  const pos = getLivePositions()[Math.floor(Math.random()*getLivePositions().length)];
+  const events = [
+    { type: 'CREATED', ts: new Date(Date.now()-6*3600*1000).toISOString(), note: 'Order confirmed' },
+    { type: 'LOADING', ts: new Date(Date.now()-4*3600*1000).toISOString(), note: 'Loading at yard' },
+    { type: 'DISPATCHED', ts: new Date(Date.now()-2*3600*1000).toISOString(), note: `Rake ${rake?.id} departed` },
+  ];
+  const eta = new Date(Date.now()+3*3600*1000).toISOString();
+  res.json({ orderId, plan_id: 'PLAN-'+orderId, rake_id: rake?.id, last_known_location: { lat: pos.lat, lng: pos.lng, name: pos.currentLocationName }, ETA: eta, events });
+});
 // Advanced Optimizer Engine - MILP + Heuristics + ML
 const OPTIMIZER_CONFIG = {
   constraints: {

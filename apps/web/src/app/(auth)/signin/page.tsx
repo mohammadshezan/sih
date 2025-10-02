@@ -69,7 +69,14 @@ export default function SignInPage() {
       }
       localStorage.setItem("token", data.token);
       push({ text: 'Signed in', tone: 'success' });
-      window.location.href = "/dashboard";
+      const role = (data?.user?.role || '').toLowerCase();
+      const redirect = role === 'admin' ? '/admin/constraints'
+        : role === 'manager' ? '/reports/production-alignment'
+        : role === 'cmo' ? '/cmo/dashboard'
+        : role === 'yard' ? '/yard/wagon-health'
+        : role === 'customer' ? '/customer-dashboard'
+        : '/dashboard';
+      window.location.href = redirect;
     } catch (e: any) {
       const msg = e?.message?.includes('Failed to fetch') ? 'Network error: unable to reach API at /auth/login' : e?.message || 'Login failed';
       setError(msg);
@@ -95,7 +102,7 @@ export default function SignInPage() {
               {sending ? 'Sending…' : 'Send OTP'}
             </button>
           </div>
-          <p className="text-xs text-gray-400 mt-1">Use your role email (admin@sail.test, manager@sail.test, yard@sail.test) or customer+name@sail.test. We emailed a 6-digit code that expires in 5 minutes.</p>
+          <p className="text-xs text-gray-400 mt-1">Use your role email (admin@sail.test, manager@sail.test, cmo@sail.test, yard@sail.test) or customer+name@sail.test. We emailed a 6-digit code that expires in 5 minutes.</p>
         </div>
         {error && <p className="text-sm text-brand-red">{error}</p>}
         <button disabled={loading} className="w-full rounded-md bg-brand-green text-black py-2 font-medium">{loading? 'Signing in…':'Continue'}</button>
