@@ -187,3 +187,41 @@ model YardActivity {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 }
+
+// --------------------------------
+// CMO Allocation & Audit (optional)
+// --------------------------------
+
+enum AllocationStatus {
+  draft
+  submitted
+  approved
+  rejected
+}
+
+model Allocation {
+  id           String            @id
+  status       AllocationStatus  @default(draft)
+  payload      Json
+  createdBy    String
+  createdAt    DateTime          @default(now())
+  approvedBy   String?
+  approvedAt   DateTime?
+  rejectedBy   String?
+  rejectedAt   DateTime?
+  rejectReason String?
+
+  audits       AllocationAudit[]
+}
+
+model AllocationAudit {
+  id       Int         @id @default(autoincrement())
+  alloc    Allocation  @relation(fields: [allocId], references: [id])
+  allocId  String
+  user     String
+  action   String
+  diff     Json?
+  ts       DateTime    @default(now())
+
+  @@index([allocId, ts])
+}

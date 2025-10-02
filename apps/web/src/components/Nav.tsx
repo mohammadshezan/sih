@@ -86,6 +86,14 @@ export default function Nav() {
                   <Link href="/admin/audit-reports">Audit</Link>
                 </>
               )}
+              {role==='cmo' && (
+                <>
+                  <Link href="/cmo/dashboard">Dashboard</Link>
+                  <Link href="/cmo/allocation">Allocation</Link>
+                  <Link href="/cmo/approvals">Approvals</Link>
+                  <Link href="/cmo/audit">Audit</Link>
+                </>
+              )}
               <button onClick={()=>{ localStorage.removeItem('token'); location.href='/'; }} className="rounded-md border border-white/10 px-3 py-1">Sign out</button>
             </>
           ) : (

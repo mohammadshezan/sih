@@ -1878,7 +1878,36 @@ app.get('/api/v1/cmo/summary', auth('cmo'), (req, res) => {
 
 app.get('/api/v1/cmo/allocations', auth('cmo'), (req,res) => {
   const list = Array.from(ALLOCATIONS.values()).sort((a,b)=> b.createdAt - a.createdAt);
-  res.json({ allocations: list });
+  if (prisma) {
+    (async()=>{
+      try {
+        const db = await prisma.allocation.findMany({ orderBy: { createdAt: 'desc' } });
+        const map = new Map(list.map(x=> [x.id, x]));
+        db.forEach(d => {
+          const merged = {
+            id: d.id,
+            status: d.status,
+            payload: d.payload,
+            createdBy: d.createdBy,
+            createdAt: new Date(d.createdAt).getTime(),
+            approvedBy: d.approvedBy,
+            approvedAt: d.approvedAt ? new Date(d.approvedAt).getTime() : undefined,
+            rejectedBy: d.rejectedBy,
+            rejectedAt: d.rejectedAt ? new Date(d.rejectedAt).getTime() : undefined,
+            rejectReason: d.rejectReason
+          };
+          const m = map.get(d.id);
+          map.set(d.id, m ? { ...m, ...merged } : merged);
+        });
+        const mergedList = Array.from(map.values()).sort((a,b)=> b.createdAt - a.createdAt);
+        return res.json({ allocations: mergedList });
+      } catch {
+        return res.json({ allocations: list });
+      }
+    })();
+  } else {
+    res.json({ allocations: list });
+  }
 });
 
 app.post('/api/v1/cmo/allocations/draft', auth('cmo'), (req,res) => {
@@ -1887,6 +1916,12 @@ app.post('/api/v1/cmo/allocations/draft', auth('cmo'), (req,res) => {
   const record = { id, status: 'draft', payload: { order_ids, stockyard_id, notes }, createdBy: req.user?.email, createdAt: Date.now() };
   ALLOCATIONS.set(id, record);
   ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'create_draft', diff: record.payload, ts: Date.now() });
+  if (prisma) {
+    (async()=>{
+      try { await prisma.allocation.create({ data: { id, status: 'draft', payload: record.payload, createdBy: record.createdBy } }); } catch {}
+      try { await prisma.allocationAudit.create({ data: { allocId: id, user: req.user?.email || '', action: 'create_draft', diff: record.payload } }); } catch {}
+    })();
+  }
   res.json({ ok:true, draft: record });
 });
 
@@ -1896,6 +1931,12 @@ app.post('/api/v1/cmo/allocations/:id/submit', auth('cmo'), (req,res) => {
   if (!r) return res.status(404).json({ error: 'not_found' });
   r.status = 'submitted';
   ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'submit', diff: {}, ts: Date.now() });
+  if (prisma) {
+    (async()=>{
+      try { await prisma.allocation.update({ where: { id }, data: { status: 'submitted' } }); } catch {}
+      try { await prisma.allocationAudit.create({ data: { allocId: id, user: req.user?.email || '', action: 'submit' } }); } catch {}
+    })();
+  }
   res.json({ ok:true, allocation: r });
 });
 
@@ -1908,6 +1949,12 @@ app.post('/api/v1/cmo/allocations/:id/approve', auth(), (req,res) => {
   r.status = 'approved';
   r.approvedBy = req.user?.email; r.approvedAt = Date.now();
   ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'approve', diff: {}, ts: Date.now() });
+  if (prisma) {
+    (async()=>{
+      try { await prisma.allocation.update({ where: { id }, data: { status: 'approved', approvedBy: r.approvedBy, approvedAt: new Date(r.approvedAt) } }); } catch {}
+      try { await prisma.allocationAudit.create({ data: { allocId: id, user: req.user?.email || '', action: 'approve' } }); } catch {}
+    })();
+  }
   res.json({ ok:true, allocation: r });
 });
 
@@ -1921,16 +1968,50 @@ app.post('/api/v1/cmo/allocations/:id/reject', auth(), (req,res) => {
   r.status = 'rejected';
   r.rejectedBy = req.user?.email; r.rejectedAt = Date.now(); r.rejectReason = reason;
   ALLOC_AUDIT.push({ allocId: id, user: req.user?.email, action: 'reject', diff: { reason }, ts: Date.now() });
+  if (prisma) {
+    (async()=>{
+      try { await prisma.allocation.update({ where: { id }, data: { status: 'rejected', rejectedBy: r.rejectedBy, rejectedAt: new Date(r.rejectedAt), rejectReason: reason } }); } catch {}
+      try { await prisma.allocationAudit.create({ data: { allocId: id, user: req.user?.email || '', action: 'reject', diff: { reason } } }); } catch {}
+    })();
+  }
   res.json({ ok:true, allocation: r });
 });
 
 // Allocation detail with recent audit trail
 app.get('/api/v1/cmo/allocations/:id', auth('cmo'), (req,res) => {
   const id = req.params.id;
-  const r = ALLOCATIONS.get(id);
-  if (!r) return res.status(404).json({ error: 'not_found' });
-  const audit = ALLOC_AUDIT.filter(a => a.allocId === id).slice(-50).reverse();
-  res.json({ allocation: r, audit });
+  const mem = ALLOCATIONS.get(id);
+  const send = (alloc) => {
+    const audit = ALLOC_AUDIT.filter(a => a.allocId === id).slice(-50).reverse();
+    res.json({ allocation: alloc, audit });
+  };
+  if (prisma) {
+    (async()=>{
+      try {
+        const d = await prisma.allocation.findUnique({ where: { id } });
+        if (d) {
+          const merged = {
+            id: d.id,
+            status: d.status,
+            payload: d.payload,
+            createdBy: d.createdBy,
+            createdAt: new Date(d.createdAt).getTime(),
+            approvedBy: d.approvedBy,
+            approvedAt: d.approvedAt ? new Date(d.approvedAt).getTime() : undefined,
+            rejectedBy: d.rejectedBy,
+            rejectedAt: d.rejectedAt ? new Date(d.rejectedAt).getTime() : undefined,
+            rejectReason: d.rejectReason
+          };
+          return send(mem ? { ...mem, ...merged } : merged);
+        }
+      } catch {}
+      if (mem) return send(mem);
+      return res.status(404).json({ error: 'not_found' });
+    })();
+  } else {
+    if (!mem) return res.status(404).json({ error: 'not_found' });
+    send(mem);
+  }
 });
 
 // Audit with simple filters: from,to,allocId,action,limit

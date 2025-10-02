@@ -6,7 +6,7 @@ export default function CMOApprovals(){
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
-  const [actionNote, setActionNote] = useState<string>("");
+  const [notes, setNotes] = useState<Record<string,string>>({});
 
   const token = typeof window !== 'undefined' ? (localStorage.getItem('token')||'') : '';
 
@@ -23,9 +23,9 @@ export default function CMOApprovals(){
 
   const act = async (id:string, type:'approve'|'reject')=>{
     const url = type==='approve' ? `/api/v1/cmo/allocations/${id}/approve` : `/api/v1/cmo/allocations/${id}/reject`;
-    const body = type==='reject' ? JSON.stringify({ reason: actionNote }) : undefined;
+    const body = type==='reject' ? JSON.stringify({ reason: notes[id]||'' }) : undefined;
     const r = await fetch(withBase(url), { method:'POST', headers: { 'Content-Type':'application/json', Authorization: `Bearer ${token}` }, body });
-    if(r.ok){ setMsg(type==='approve'?'Approved':'Rejected'); setActionNote(''); load(); } else { setMsg('Action failed'); }
+    if(r.ok){ setMsg(type==='approve'?'Approved':'Rejected'); setNotes(prev=> ({ ...prev, [id]: '' })); load(); } else { setMsg('Action failed'); }
   };
 
   return (
@@ -41,14 +41,16 @@ export default function CMOApprovals(){
           <tbody>
             {items.map((r)=> (
               <tr key={r.id} className="border-b border-white/10">
-                <Td>{r.id}</Td>
+                <Td>
+                  <a href={`/cmo/allocation/${encodeURIComponent(r.id)}`} target="_blank" className="underline">{r.id}</a>
+                </Td>
                 <Td>{r.payload?.stockyard_id}</Td>
                 <Td>{(r.payload?.order_ids||[]).join(', ')}</Td>
                 <Td>{new Date(r.createdAt).toLocaleString()}</Td>
                 <Td>
                   <div className="flex gap-2 items-center">
                     <button onClick={()=> act(r.id,'approve')} className="px-2 py-1 rounded bg-emerald-600 text-white">Approve</button>
-                    <input value={actionNote} onChange={e=> setActionNote(e.target.value)} placeholder="Reject reason" className="px-2 py-1 bg-white/5 border border-white/10 rounded text-xs"/>
+                    <input value={notes[r.id]||''} onChange={e=> setNotes(prev=> ({ ...prev, [r.id]: e.target.value }))} placeholder="Reject reason" className="px-2 py-1 bg-white/5 border border-white/10 rounded text-xs"/>
                     <button onClick={()=> act(r.id,'reject')} className="px-2 py-1 rounded bg-rose-600 text-white">Reject</button>
                   </div>
                 </Td>
