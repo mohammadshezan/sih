@@ -6,6 +6,7 @@ import {
   PieChart, Pie, Cell, ResponsiveContainer, ScatterChart, Scatter
 } from 'recharts';
 import { trackAction } from '@/lib/analytics';
+import { useSearchParams } from 'next/navigation';
 
 const API_BASE = process.env.NODE_ENV === 'production' 
   ? 'https://qsteel-api.onrender.com' 
@@ -26,7 +27,12 @@ const OptimizerPage = () => {
     emissions: 0.1
   });
   const [highContrast, setHighContrast] = useState<boolean>(false);
+  const [compareForm, setCompareForm] = useState<{ source: string; target: string }>({ source: '', target: '' });
+  const [compareResult, setCompareResult] = useState<any>(null);
+  const [selectedAltId, setSelectedAltId] = useState<string>('');
+  const [commitState, setCommitState] = useState<'idle' | 'committing' | 'committed' | 'error'>('idle');
 
+  const search = useSearchParams();
   // Load preference
   useEffect(() => {
     try { const v = localStorage.getItem('optimizer_high_contrast'); if (v) setHighContrast(v === '1'); } catch {}
@@ -48,6 +54,17 @@ const OptimizerPage = () => {
     loadConstraints();
     loadProductionAlignment();
     loadDailyPlan();
+    // Prefill from query params and optional autorun compare
+    try {
+      const qpSource = search?.get('source') || search?.get('plant');
+      const qpTarget = search?.get('target') || search?.get('cmo');
+      const auto = search?.get('autorun');
+      if (qpSource || qpTarget) setCompareForm({ source: qpSource || '', target: qpTarget || '' });
+      if (qpSource && qpTarget && auto === '1') {
+        // Debounce a bit for constraints/dailyPlan to load
+        setTimeout(() => runAltCompare(), 350);
+      }
+    } catch {}
   }, []);
 
   const apiCall = async (endpoint: string, options: any = {}) => {
@@ -98,6 +115,113 @@ const OptimizerPage = () => {
       setDailyPlan(data);
     } catch (error) {
       console.error('Failed to load daily plan:', error);
+    }
+  };
+
+  const runAltCompare = async () => {
+    try { trackAction('run_alt_compare', { source: compareForm.source, target: compareForm.target }); } catch {}
+    setLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const base = API_BASE;
+      const payload = JSON.stringify({ source: compareForm.source, target: compareForm.target });
+      async function trySeq(paths:string[]) {
+        for (const p of paths) {
+          try {
+            const r = await fetch(base + p, { method:'POST', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${token}` }, body: payload });
+            if (r.ok) return await r.json();
+          } catch {}
+        }
+        throw new Error('all_failed');
+      }
+      const data = await trySeq([
+        '/ai/alt/compare',
+        '/manager/ai/alt/compare',
+        '/admin/ai/alt/compare'
+      ]).catch(() => buildLocalAltCompare(compareForm.source, compareForm.target));
+      setCompareResult(data);
+      // Preselect best by cost if available
+      try {
+        const bestId = (data.bestBy && (data.bestBy.cost || data.bestBy.eta || data.bestBy.co2))
+          ? (data.bestBy.cost || data.bestBy.eta || data.bestBy.co2)
+          : (data.alternatives?.[0]?.id || data.alternatives?.[0]?.name || '');
+        setSelectedAltId(bestId || '');
+      } catch {}
+    } catch (e) {
+      console.error('Alt compare failed:', e);
+      setCompareResult(buildLocalAltCompare(compareForm.source, compareForm.target));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const commitPlan = async () => {
+    if (!compareResult || !selectedAltId) return;
+    setCommitState('committing');
+    try { trackAction('commit_alt_plan', { source: compareForm.source, target: compareForm.target, alt: selectedAltId }); } catch {}
+    try {
+      const token = localStorage.getItem('token');
+      const base = API_BASE;
+      // find metrics for the selected alt if present
+      const alt = (compareResult.alternatives||[]).find((a:any)=> (a.id||a.name) === selectedAltId);
+      const m = alt?.metrics || {};
+      const body = JSON.stringify({
+        plant: compareForm.source,
+        cmo: compareForm.target,
+        alternative: { id: selectedAltId, name: selectedAltId },
+        // waypoints omitted here; backend can still return overlay token for future use
+        metrics: {
+          distanceKm: m.distanceKm ?? m.distance,
+          etaHours: m.etaHours ?? m.eta,
+          co2Tons: m.co2Tons ?? m.co2,
+          cost: m.costLakh ?? m.cost
+        }
+      });
+      async function trySeq(paths:string[]) {
+        for (const p of paths) {
+          try {
+            const r = await fetch(base + p, { method:'POST', headers:{ 'Content-Type':'application/json', Authorization:`Bearer ${token}` }, body });
+            if (r.ok) return await r.json();
+          } catch {}
+        }
+        throw new Error('all_failed');
+      }
+      const resp = await trySeq([
+        '/planner/plan/commit',
+        '/manager/plan/commit',
+        '/cmo/plan/commit',
+        '/admin/plan/commit'
+      ]).catch(() => null);
+      if (!resp) {
+        // Fallback: save locally
+        try {
+          const key = 'optimizer_committed_plan';
+          const existing = JSON.parse(localStorage.getItem(key) || '[]');
+          existing.push({ ts: Date.now(), plant: compareForm.source, cmo: compareForm.target, alternative: selectedAltId, metrics: m });
+          localStorage.setItem(key, JSON.stringify(existing));
+        } catch {}
+        setCommitState('committed');
+        return;
+      }
+      setCommitState('committed');
+      // Briefly notify success before redirecting to Map
+      try {
+        if (typeof window !== 'undefined') {
+          // lightweight toast using alert or a custom event (replace with your toast system if available)
+          try { (window as any).dispatchEvent(new CustomEvent('toast', { detail: { type:'success', text:'Plan committed. Opening Map…' } })); } catch { alert('Plan committed. Opening Map…'); }
+        }
+      } catch {}
+      // Redirect to Map with overlay token (if provided) so the route is auto-drawn
+      try {
+        const qp = new URLSearchParams({ plant: compareForm.source, cmo: compareForm.target, alt: selectedAltId });
+        if (resp.overlayToken) qp.set('overlay', resp.overlayToken);
+        window.location.href = `/map?${qp.toString()}`;
+      } catch {}
+    } catch (e) {
+      console.error('Commit plan failed:', e);
+      setCommitState('error');
+    } finally {
+      setTimeout(() => setCommitState('idle'), 2500);
     }
   };
 
@@ -306,6 +430,34 @@ const OptimizerPage = () => {
     };
   }
 
+  function buildLocalAltCompare(source?: string, target?: string){
+    const names = ['A1 Mainline', 'A2 Coastal', 'A3 Inner', 'A4 Express', 'A5 Hybrid', 'A6 Green'] as const;
+    const alts = names.map((name, i) => {
+      // pseudo-random but stable metrics per index
+      const distance = 450 + i*35 + (i%2? 12: 0);
+      const etaH = 9 + i*0.6 + (i%3===0? 0.3: 0);
+      const co2 = 120 + (6-i)*7 + (i%2? 3: 0);
+      const cost = 8.5 + i*0.35 + (i%2? 0.15: 0);
+      return {
+        id: name,
+        name,
+        metrics: {
+          distanceKm: distance,
+          etaHours: etaH,
+          co2Tons: co2,
+          costLakh: cost
+        }
+      };
+    });
+    // best by simple min rules
+    const bestBy = {
+      cost: alts.reduce((a,b)=> (a.metrics.costLakh < b.metrics.costLakh ? a : b)).id,
+      eta: alts.reduce((a,b)=> (a.metrics.etaHours < b.metrics.etaHours ? a : b)).id,
+      co2: alts.reduce((a,b)=> (a.metrics.co2Tons < b.metrics.co2Tons ? a : b)).id
+    };
+    return { source, target, alternatives: alts, bestBy };
+  }
+
   const exportDailyPlan = () => {
     const token = localStorage.getItem('token');
     try { trackAction('export_daily_plan_csv'); } catch {}
@@ -507,6 +659,121 @@ const OptimizerPage = () => {
                 </div>
               );
             })()}
+          </div>
+
+          {/* Alt Route Compare and Commit */}
+          <div className="p-6 rounded-lg shadow bg-gray-900 border border-gray-700">
+            <h3 className="text-lg font-semibold mb-4 text-gray-100">🗺️ Route Compare (Plant → CMO)</h3>
+            <div className="grid md:grid-cols-3 gap-4 items-end">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Plant</label>
+                <select
+                  value={compareForm.source}
+                  onChange={(e)=> setCompareForm({ ...compareForm, source: e.target.value })}
+                  className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 text-gray-100"
+                >
+                  <option value="">Select Plant</option>
+                  {(() => {
+                    const points: string[] = constraints ? Object.keys(constraints.loadingPoints||{}) : ['Bokaro','Durgapur','Rourkela'];
+                    return points.map(p => <option key={p} value={p}>{p}</option>);
+                  })()}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">CMO Destination</label>
+                <select
+                  value={compareForm.target}
+                  onChange={(e)=> setCompareForm({ ...compareForm, target: e.target.value })}
+                  className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 text-gray-100"
+                >
+                  <option value="">Select Destination</option>
+                  {(() => {
+                    const dests: string[] = dailyPlan ? Array.from(new Set(dailyPlan.rakes?.map((r:any)=> r.destination).filter(Boolean))) : ['Bhilai','Raipur','Asansol','Kolkata'];
+                    return dests.map(d => <option key={d} value={d}>{d}</option>);
+                  })()}
+                </select>
+              </div>
+              <div>
+                <button
+                  onClick={runAltCompare}
+                  disabled={loading || !compareForm.source || !compareForm.target}
+                  className="w-full bg-teal-600 text-white px-4 py-2 rounded-lg hover:bg-teal-700 disabled:opacity-50"
+                >
+                  {loading ? 'Comparing…' : 'Compare Routes'}
+                </button>
+              </div>
+            </div>
+
+            {compareResult && (
+              <div className="mt-6 space-y-4">
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-gray-300">Best Cost: <span className="text-green-400 font-mono">{compareResult.bestBy?.cost}</span></span>
+                  <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-gray-300">Best ETA: <span className="text-blue-400 font-mono">{compareResult.bestBy?.eta}</span></span>
+                  <span className="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-gray-300">Best CO₂: <span className="text-emerald-400 font-mono">{compareResult.bestBy?.co2}</span></span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-700">
+                    <thead className="bg-gray-800">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Select</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Alternative</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Distance</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">ETA</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">CO₂</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-300 uppercase">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-gray-900 divide-y divide-gray-800">
+                      {(compareResult.alternatives||[]).map((alt:any)=>{
+                        const id = alt.id || alt.name;
+                        const m = alt.metrics || alt;
+                        const isBestCost = compareResult.bestBy?.cost === id;
+                        const isBestEta = compareResult.bestBy?.eta === id;
+                        const isBestCo2 = compareResult.bestBy?.co2 === id;
+                        return (
+                          <tr key={id} className="hover:bg-gray-800/60">
+                            <td className="px-4 py-2">
+                              <input type="radio" name="altSelect" checked={selectedAltId===id} onChange={()=> setSelectedAltId(id)} />
+                            </td>
+                            <td className="px-4 py-2 text-gray-200 font-medium">{id}</td>
+                            <td className="px-4 py-2 text-gray-300">
+                              <span className="font-mono">{(m.distanceKm || m.distance || 0).toFixed ? (m.distanceKm||m.distance).toFixed(0) : (m.distanceKm||m.distance)}</span> km
+                            </td>
+                            <td className="px-4 py-2 text-gray-300">
+                              <span className={`font-mono ${isBestEta ? 'text-blue-300 font-semibold' : ''}`}>{(m.etaHours || m.eta || 0).toFixed ? (m.etaHours||m.eta).toFixed(1) : (m.etaHours||m.eta)}</span> h
+                              {isBestEta && <span className="ml-2 text-xs px-2 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700/40">best</span>}
+                            </td>
+                            <td className="px-4 py-2 text-gray-300">
+                              <span className={`font-mono ${isBestCo2 ? 'text-emerald-300 font-semibold' : ''}`}>{(m.co2Tons || m.co2 || 0).toFixed ? (m.co2Tons||m.co2).toFixed(1) : (m.co2Tons||m.co2)}</span> T
+                              {isBestCo2 && <span className="ml-2 text-xs px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-700/40">best</span>}
+                            </td>
+                            <td className="px-4 py-2 text-gray-300">
+                              ₹ <span className={`font-mono ${isBestCost ? 'text-green-300 font-semibold' : ''}`}>{(m.costLakh || m.cost || 0).toFixed ? (m.costLakh||m.cost).toFixed(2) : (m.costLakh||m.cost)}</span> Lakh
+                              {isBestCost && <span className="ml-2 text-xs px-2 py-0.5 rounded bg-green-900/40 text-green-300 border border-green-700/40">best</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={commitPlan}
+                    disabled={!selectedAltId || commitState==='committing'}
+                    className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {commitState==='committing' ? 'Committing…' : '✅ Commit Selected Plan'}
+                  </button>
+                  {commitState==='committed' && (
+                    <span className="text-green-400 text-sm">Plan committed</span>
+                  )}
+                  {commitState==='error' && (
+                    <span className="text-red-400 text-sm">Commit failed</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

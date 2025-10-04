@@ -5,23 +5,52 @@ import { withBase } from "@/lib/config";
 export default function CMODashboard(){
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string>("");
+  const [yards, setYards] = useState<string[]>(["Chennai","Mumbai","Delhi","Visakhapatnam","Indore","Kanpur","Rourkela","Patna","Durgapur","Bhilai"]);
+  const [selected, setSelected] = useState<string[]>(["Durgapur","Rourkela","Bhilai"]);
   useEffect(()=>{
     const load = async ()=>{
       try{
         const token = localStorage.getItem('token')||'';
-        const r = await fetch(withBase('/api/v1/cmo/summary'), { headers: { Authorization: `Bearer ${token}` }});
+        const qs = selected.map(s=> `yard=${encodeURIComponent(s)}`).join('&');
+        const r = await fetch(withBase(`/api/v1/cmo/summary?${qs}`), { headers: { Authorization: `Bearer ${token}` }});
         if(!r.ok) throw new Error('Failed');
         setData(await r.json());
       }catch(e:any){ setError(e?.message||'error'); }
     };
     load();
-  },[]);
+  },[selected]);
   if(error) return <main className="p-6">Error: {error}</main>;
   if(!data) return <main className="p-6">Loading…</main>;
   const k = data.kpis||{};
   return (
     <main className="p-6 space-y-4">
       <h2 className="text-2xl font-semibold">CMO Dashboard</h2>
+      <div>
+        <a
+          className="text-xs underline"
+          href="#"
+          onClick={async (e)=>{
+            e.preventDefault();
+            try {
+              const token = localStorage.getItem('token')||'';
+              const r = await fetch(withBase('/cmo/orders.csv'), { headers: { Authorization: `Bearer ${token}` }});
+              if(!r.ok) throw new Error('Failed');
+              const blob = await r.blob(); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'cmo-orders.csv'; a.click(); URL.revokeObjectURL(url);
+            } catch {}
+          }}
+        >Download CMO Orders CSV</a>
+      </div>
+      <div className="rounded-xl bg-white/5 p-4 border border-white/10">
+        <div className="text-sm text-gray-400 mb-2">Filter Stockyards</div>
+        <div className="flex flex-wrap gap-2">
+          {yards.map(y=>{
+            const active = selected.includes(y);
+            return (
+              <button key={y} onClick={()=> setSelected(s=> active ? s.filter(i=> i!==y) : [...s,y])} className={`px-2 py-1 rounded border ${active? 'bg-brand-green text-black border-brand-green':'border-white/20'}`}>{y}</button>
+            );
+          })}
+        </div>
+      </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card title="Backlog" value={k.backlog}/>
         <Card title="Stockyard Util" value={`${Math.round((k.stockyardUtil||0)*100)}%`}/>

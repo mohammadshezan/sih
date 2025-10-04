@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-export default function Guard({ allow, children }: { allow: Array<'admin'|'manager'|'yard'|'customer'>; children: React.ReactNode }) {
+export default function Guard({ allow, children }: { allow: Array<'admin'|'manager'|'yard'|'customer'|'cmo'|'crew'>; children: React.ReactNode }) {
   const [ok, setOk] = useState<boolean>(false);
   useEffect(() => {
     const token = localStorage.getItem('token') || '';

@@ -61,6 +61,7 @@ export default function Nav() {
                 <>
                   <Link href="/manager/approvals">Approvals</Link>
                   <Link href="/map">Map</Link>
+                  <Link href="/projects/tracker">Projects</Link>
                   <Link href="/optimizer">Optimizer</Link>
                   <Link href="/dispatch-planner">Planner</Link>
                   <Link href="/manager/simulator">Simulator</Link>
@@ -72,6 +73,7 @@ export default function Nav() {
                 <>
                   <Link href="/yard-actions">Yard</Link>
                   <Link href="/map">Map</Link>
+                  <Link href="/crew/controls">Crew</Link>
                   <Link href="/yard/wagon-health">Wagon Health</Link>
                   <Link href="/yard/safety">Safety</Link>
                 </>
@@ -90,9 +92,17 @@ export default function Nav() {
               {role==='cmo' && (
                 <>
                   <Link href="/cmo/dashboard">Dashboard</Link>
+                  <Link href="/cmo/new-order">New Order</Link>
                   <Link href="/cmo/allocation">Allocation</Link>
                   <Link href="/cmo/approvals">Approvals</Link>
                   <Link href="/cmo/audit">Audit</Link>
+                  <Link href="/projects/tracker">Projects</Link>
+                </>
+              )}
+              {role==='crew' && (
+                <>
+                  <Link href="/map">Map</Link>
+                  <Link href="/crew/controls">Crew Controls</Link>
                 </>
               )}
               <button onClick={()=>{ localStorage.removeItem('token'); location.href='/'; }} className="rounded-md border border-white/10 px-3 py-1">Sign out</button>

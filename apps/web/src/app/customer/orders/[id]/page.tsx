@@ -14,11 +14,32 @@ export default function OrderDetail({ params }: any) {
 
 function OrderView({ orderId }: { orderId: string }) {
   const [order, setOrder] = useState<any>(null);
+  const [etaCalc, setEtaCalc] = useState<null | { eta: string; confidence: number; transitHours: number }>(null);
+  const [etaLoading, setEtaLoading] = useState(false);
   useEffect(() => {
     const token = localStorage.getItem('token')||'';
     fetch(withBase(`/customer/orders/${orderId}`), { headers: { Authorization: `Bearer ${token}` } })
       .then(r=>r.json()).then(d=>setOrder(d.order)).catch(()=>{});
   }, [orderId]);
+  const onRecalcEta = async () => {
+    if (!order?.destination) return;
+    try {
+      setEtaLoading(true);
+      const token = localStorage.getItem('token')||'';
+      const resp = await fetch(withBase('/ai/eta'), {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ sourcePlant: order.sourcePlant, destination: order.destination })
+      });
+      if (!resp.ok) throw new Error('Failed');
+      const j = await resp.json();
+      setEtaCalc({ eta: j.eta, confidence: j.confidence, transitHours: j.transitHours });
+    } catch {
+      setEtaCalc(null);
+    } finally {
+      setEtaLoading(false);
+    }
+  };
   if (!order) return <div className="max-w-3xl mx-auto p-6">Loading…</div>;
   return (
     <div className="max-w-3xl mx-auto p-6 space-y-4">
@@ -47,6 +68,16 @@ function OrderView({ orderId }: { orderId: string }) {
           <div className="text-sm">Cost: ₹{order.estimate?.cost?.toLocaleString?.()}</div>
           <div className="text-sm">ETA: {new Date(order.estimate?.eta).toLocaleString()}</div>
           <div className="text-sm">Carbon: {order.estimate?.carbonTons} tCO₂</div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={onRecalcEta} className="px-3 py-1 rounded border border-white/20 text-xs disabled:opacity-60" disabled={etaLoading}>
+              {etaLoading ? 'Calculating…' : 'Recalculate ETA'}
+            </button>
+            {etaCalc && (
+              <div className="text-xs text-gray-300">
+                ETA: {new Date(etaCalc.eta).toLocaleString()} · {etaCalc.transitHours}h · conf {(etaCalc.confidence*100).toFixed(0)}%
+              </div>
+            )}
+          </div>
         </div>
       </div>
       <div className="border border-white/10 rounded p-3">

@@ -215,6 +215,127 @@ app.use((req, res, next) => {
 const ALLOCATIONS = new Map(); // id -> { id, status, payload, createdBy, createdAt, approvedBy?, approvedAt? }
 const ALLOC_AUDIT = []; // { allocId, user, action, diff, ts }
 
+// ==== Customer Projects (static demo dataset) ====
+// Minimal project sites to mark on the map and list in UIs. In production this would come from DB/ERP.
+const CUSTOMER_PROJECTS = [
+  { id: 'PRJ-CHN-01', name: 'Metro Viaduct Piling', city: 'Chennai', state: 'TN', products: ['TMT Bars','H-Beams'], nearestCMO: 'Chennai', lat: 13.0827, lng: 80.2707 },
+  { id: 'PRJ-MUM-01', name: 'Sea Link Expansion', city: 'Mumbai', state: 'MH', products: ['TMT Bars','Coils'], nearestCMO: 'Mumbai', lat: 19.0760, lng: 72.8777 },
+  { id: 'PRJ-DEL-01', name: 'Ring Road Flyover', city: 'Delhi', state: 'DL', products: ['H-Beams','Steel'], nearestCMO: 'Delhi', lat: 28.6139, lng: 77.2090 },
+  { id: 'PRJ-VSKP-01', name: 'Port Warehouse', city: 'Visakhapatnam', state: 'AP', products: ['Coils','Steel'], nearestCMO: 'Visakhapatnam', lat: 17.6868, lng: 83.2185 },
+  { id: 'PRJ-IND-01', name: 'Industrial Park Phase 2', city: 'Indore', state: 'MP', products: ['Cement','Steel'], nearestCMO: 'Indore', lat: 22.7196, lng: 75.8577 },
+  { id: 'PRJ-KNP-01', name: 'River Bridge', city: 'Kanpur', state: 'UP', products: ['TMT Bars'], nearestCMO: 'Kanpur', lat: 26.4499, lng: 80.3319 },
+  { id: 'PRJ-ROU-01', name: 'Structural Rehab', city: 'Rourkela', state: 'OD', products: ['H-Beams'], nearestCMO: 'Rourkela', lat: 22.2604, lng: 84.8540 },
+  { id: 'PRJ-PAT-01', name: 'Ring Road Package-3', city: 'Patna', state: 'BR', products: ['Cement','TMT Bars'], nearestCMO: 'Patna', lat: 25.5941, lng: 85.1376 },
+  { id: 'PRJ-DGR-01', name: 'Industrial Shed Cluster', city: 'Durgapur', state: 'WB', products: ['Coils','TMT Bars'], nearestCMO: 'Durgapur', lat: 23.5204, lng: 87.3119 },
+  { id: 'PRJ-BPHB-01', name: 'Smart City Roads', city: 'Bhilai', state: 'CG', products: ['Steel','Cement'], nearestCMO: 'Bhilai', lat: 21.1938, lng: 81.3810 },
+];
+
+// Ongoing Major Projects (mock, partial from attached list)
+const MAJOR_PROJECTS = [
+  { id: 'MP-DEL-01', name: 'Delhi Katra Expressway', products: ['Plates','TMT Bars'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Raipur → Nagpur → Itarsi → Bhopal → Bina → Jhansi → Agra Cantt → Delhi', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090 },
+  { id: 'MP-DEL-02', name: 'Delhi Meerut RRTS', products: ['Structural Steel','Rails'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Nagpur → Itarsi → Bhopal → Bina → Jhansi → Agra Cantt → Delhi', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090 },
+  { id: 'MP-HP-01', name: 'Bhanupali–Bilaspur–Beri Railway Gauge Link, HP', products: ['Rails','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Nagpur → Itarsi → Bhopal → Bina → Jhansi → Delhi → Chandigarh', nearestCMO: 'Chandigarh', city: 'Chandigarh', lat: 30.7333, lng: 76.7794 },
+  { id: 'MP-UP-01', name: 'Kanpur Metro, Uttar Pradesh', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Nagpur → Jabalpur → Katni → Satna → Allahabad → Kanpur', nearestCMO: 'Lucknow', city: 'Lucknow', lat: 26.8467, lng: 80.9462 },
+  { id: 'MP-BR-01', name: 'Patna Metro (Bihar)', products: ['Structural Steel','Rails'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Bilaspur → Rourkela → Asansol → Mughalsarai → Patna', nearestCMO: 'Patna', city: 'Patna', lat: 25.5941, lng: 85.1376 },
+  { id: 'MP-AS-01', name: 'Integrated Directorate Complex, Guwahati', products: ['Structural Steel','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Bilaspur → Rourkela → Howrah → NJP → Guwahati', nearestCMO: 'Guwahati', city: 'Guwahati', lat: 26.1445, lng: 91.7362 },
+  { id: 'MP-WB-01', name: 'Sivok Rangpo Railway Tunnel', products: ['Structural Steel','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'Durgapur → Howrah → Siliguri → Rangpo', nearestCMO: 'Kolkata', city: 'Kolkata', lat: 22.5726, lng: 88.3639 },
+  { id: 'MP-OD-01', name: 'Crude Oil Import Terminal – Paradip', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Bokaro/Rourkela → Jharsuguda → Angul → Bhubaneswar → Paradip', nearestCMO: 'Bhubaneswar', city: 'Bhubaneswar', lat: 20.2961, lng: 85.8245 },
+  { id: 'MP-TS-01', name: 'Kaleshwaram Water Pipe Line Project, Telangana', products: ['Structural Steel','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'Durgapur → Kharagpur → Vijayawada → Secunderabad', nearestCMO: 'Hyderabad', city: 'Hyderabad', lat: 17.3850, lng: 78.4867 },
+  { id: 'MP-AP-01', name: 'Amaravati Projects, AP', products: ['TMT Bars','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Raigarh → Vizianagaram → Visakhapatnam', nearestCMO: 'Visakhapatnam', city: 'Visakhapatnam', lat: 17.6868, lng: 83.2185 },
+  { id: 'MP-TN-01', name: 'Chennai Metro Rail Ltd (CMRL)', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Durgapur → Vijayawada → Chennai', nearestCMO: 'Chennai', city: 'Chennai', lat: 13.0827, lng: 80.2707 },
+  { id: 'MP-KL-01', name: 'Kochi Metro Phase II', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Burnpur → Vijayawada → Chennai → Ernakulam', nearestCMO: 'Cochin', city: 'Kochi', lat: 9.9312, lng: 76.2673 },
+  { id: 'MP-MH-01', name: 'Versova Bandra Sea Link, Mumbai', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Raipur → Nagpur → Pune → Mumbai', nearestCMO: 'Mumbai', city: 'Mumbai', lat: 19.0760, lng: 72.8777 },
+  { id: 'MP-GJ-01', name: 'Bullet Train (Gujarat Stretch)', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Raipur → Nagpur → Bhopal → Ahmedabad', nearestCMO: 'Ahmedabad', city: 'Ahmedabad', lat: 23.0225, lng: 72.5714 },
+  { id: 'MP-MP-01', name: 'Kalishindh River Linking Project, MP', products: ['Structural Steel','Plates'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Raipur → Nagpur → Bhopal → Indore', nearestCMO: 'Indore', city: 'Indore', lat: 22.7196, lng: 75.8577 },
+];
+
+// SAIL Network (subset; extend as needed)
+const SAIL_NETWORK = [
+  { id: 'CO-DEL', type: 'corporate', name: 'Corporate Office', city: 'New Delhi', state: 'DL', lat: 28.6139, lng: 77.2090, description: 'SAIL Corporate Office', contact: { email: 'info@sail.co.in' }, stats: { category: 'Corporate' } },
+  { id: 'ISP-BHILAI', type: 'integrated_plant', name: 'Bhilai Steel Plant', city: 'Bhilai', state: 'CG', lat: 21.1938, lng: 81.3810, description: 'Integrated Steel Plant', stats: { products: ['Long','Flat'] } },
+  { id: 'ISP-ROURKELA', type: 'integrated_plant', name: 'Rourkela Steel Plant', city: 'Rourkela', state: 'OD', lat: 22.2604, lng: 84.8540, description: 'Integrated Steel Plant', stats: { products: ['Flat','Plates'] } },
+  { id: 'ISP-DURGAPUR', type: 'integrated_plant', name: 'Durgapur Steel Plant', city: 'Durgapur', state: 'WB', lat: 23.5204, lng: 87.3119, description: 'Integrated Steel Plant' },
+  { id: 'ISP-BOKARO', type: 'integrated_plant', name: 'Bokaro Steel Plant', city: 'Bokaro', state: 'JH', lat: 23.6693, lng: 86.1511, description: 'Integrated Steel Plant' },
+  { id: 'ISP-BURNPUR', type: 'integrated_plant', name: 'IISCO Steel Plant (Burnpur)', city: 'Burnpur', state: 'WB', lat: 23.67, lng: 86.98, description: 'Integrated Steel Plant' },
+  { id: 'ASSP-SALEM', type: 'alloy_special', name: 'Salem Steel Plant', city: 'Salem', state: 'TN', lat: 11.6643, lng: 78.1460, description: 'Alloy & Special Steel' },
+  { id: 'FAP-CHANDRAPUR', type: 'ferro_alloy', name: 'Chandrapur Ferro Alloy Plant', city: 'Chandrapur', state: 'MH', lat: 19.9615, lng: 79.2961, description: 'Ferro Alloy Plant' },
+  { id: 'UNIT-BHADRAVATHI', type: 'unit', name: 'Visvesvaraya Iron & Steel Works', city: 'Bhadravathi', state: 'KA', lat: 13.8483, lng: 75.7050, description: 'Unit' },
+  { id: 'UNIT-RANCHI', type: 'unit', name: 'Research & Development Centre', city: 'Ranchi', state: 'JH', lat: 23.3441, lng: 85.3096, description: 'Unit' },
+  { id: 'CMO-KOL', type: 'cmo_hq', name: 'CMO Head Quarters', city: 'Kolkata', state: 'WB', lat: 22.5726, lng: 88.3639, description: 'Central Marketing Organisation HQ' },
+  { id: 'RO-ER-KOL', type: 'regional_office', name: 'Regional Office (Eastern)', city: 'Kolkata', state: 'WB', lat: 22.5726, lng: 88.3639 },
+  { id: 'RO-NR-DEL', type: 'regional_office', name: 'Regional Office (Northern)', city: 'New Delhi', state: 'DL', lat: 28.6139, lng: 77.2090 },
+  { id: 'RO-WR-MUM', type: 'regional_office', name: 'Regional Office (Western)', city: 'Mumbai', state: 'MH', lat: 19.0760, lng: 72.8777 },
+  { id: 'RO-SR-CHN', type: 'regional_office', name: 'Regional Office (Southern)', city: 'Chennai', state: 'TN', lat: 13.0827, lng: 80.2707 },
+  { id: 'SPU-AHD', type: 'spu', name: 'Steel Processing Unit', city: 'Ahmedabad', state: 'GJ', lat: 23.0225, lng: 72.5714 },
+  { id: 'SPU-LDH', type: 'spu', name: 'Steel Processing Unit', city: 'Ludhiana', state: 'PB', lat: 30.9009, lng: 75.8573 },
+  { id: 'SPU-RIS', type: 'spu', name: 'Steel Processing Unit', city: 'Rishra', state: 'WB', lat: 22.7239, lng: 88.3450 },
+  { id: 'SPU-JAG', type: 'spu', name: 'Steel Processing Unit', city: 'Jagdishpur', state: 'UP', lat: 26.7497, lng: 81.5447 },
+  { id: 'SPU-BLR', type: 'spu', name: 'Steel Processing Unit', city: 'Bangalore', state: 'KA', lat: 12.9716, lng: 77.5946 },
+  { id: 'DW-AHD', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Ahmedabad', state: 'GJ', lat: 23.0225, lng: 72.5714 },
+  { id: 'DW-IND', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Indore', state: 'MP', lat: 22.7196, lng: 75.8577 },
+  { id: 'DW-PAT', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Patna', state: 'BR', lat: 25.5941, lng: 85.1376 },
+  { id: 'DW-FBD', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Faridabad', state: 'HR', lat: 28.4089, lng: 77.3178 },
+  { id: 'DW-HYD', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Hyderabad', state: 'TS', lat: 17.3850, lng: 78.4867 },
+  { id: 'DW-VSKP', type: 'dept_wh', name: 'Departmental Warehouse', city: 'Visakhapatnam', state: 'AP', lat: 17.6868, lng: 83.2185 },
+  { id: 'CA-CHD', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Chandigarh', state: 'CH', lat: 30.7333, lng: 76.7794 },
+  { id: 'CA-JAI', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Jaipur', state: 'RJ', lat: 26.9124, lng: 75.7873 },
+  { id: 'CA-PUN', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Pune', state: 'MH', lat: 18.5204, lng: 73.8567 },
+  { id: 'CA-RAI', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Raipur', state: 'CG', lat: 21.2514, lng: 81.6296 },
+  { id: 'CA-CBE', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Coimbatore', state: 'TN', lat: 11.0168, lng: 76.9558 },
+  { id: 'CA-CHN', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Chennai', state: 'TN', lat: 13.0827, lng: 80.2707 },
+  { id: 'CA-VSKP', type: 'consignment', name: 'Consignment Agent / CHA Yard', city: 'Visakhapatnam', state: 'AP', lat: 17.6868, lng: 83.2185 },
+  { id: 'SRM-JAI', type: 'srm', name: 'Sales Resident Manager', city: 'Jaipur', state: 'RJ', lat: 26.9124, lng: 75.7873 },
+  { id: 'SRM-AHD', type: 'srm', name: 'Sales Resident Manager', city: 'Ahmedabad', state: 'GJ', lat: 23.0225, lng: 72.5714 },
+  { id: 'SRM-MUM', type: 'srm', name: 'Sales Resident Manager', city: 'Mumbai', state: 'MH', lat: 19.0760, lng: 72.8777 },
+  { id: 'SRM-BLR', type: 'srm', name: 'Sales Resident Manager', city: 'Bangalore', state: 'KA', lat: 12.9716, lng: 77.5946 },
+  { id: 'SRM-HYD', type: 'srm', name: 'Sales Resident Manager', city: 'Hyderabad', state: 'TS', lat: 17.3850, lng: 78.4867 },
+  { id: 'SRM-PAT', type: 'srm', name: 'Sales Resident Manager', city: 'Patna', state: 'BR', lat: 25.5941, lng: 85.1376 },
+  { id: 'SRM-KOL', type: 'srm', name: 'Sales Resident Manager', city: 'Kolkata', state: 'WB', lat: 22.5726, lng: 88.3639 },
+  { id: 'CCO-JSR', type: 'customer_contact', name: 'Customer Contact Office', city: 'Jamshedpur', state: 'JH', lat: 22.8046, lng: 86.2029 },
+  { id: 'CCO-NAG', type: 'customer_contact', name: 'Customer Contact Office', city: 'Nagpur', state: 'MH', lat: 21.1458, lng: 79.0882 },
+  { id: 'CCO-BBS', type: 'customer_contact', name: 'Customer Contact Office', city: 'Bhubaneswar', state: 'OD', lat: 20.2961, lng: 85.8245 },
+  { id: 'SRU-BOK', type: 'refractory', name: 'SAIL Refractory Unit', city: 'Bokaro', state: 'JH', lat: 23.6693, lng: 86.1511 },
+  { id: 'LID-PAR', type: 'logistics', name: 'Logistics & Infrastructure Dept.', city: 'Paradip', state: 'OD', lat: 20.3160, lng: 86.6116 },
+  { id: 'BSO-NR-CHD', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Chandigarh', state: 'CH', lat: 30.7333, lng: 76.7794 },
+  { id: 'BSO-NR-LDH', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Ludhiana', state: 'PB', lat: 30.9009, lng: 75.8573 },
+  { id: 'BSO-NR-FBD', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Faridabad', state: 'HR', lat: 28.4089, lng: 77.3178 },
+  { id: 'BSO-NR-GZB', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Ghaziabad', state: 'UP', lat: 28.6692, lng: 77.4538 },
+  { id: 'BSO-NR-JAI', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Jaipur', state: 'RJ', lat: 26.9124, lng: 75.7873 },
+  { id: 'BSO-NR-LKO', type: 'bso_nr', name: 'Branch Sales Office (NR)', city: 'Lucknow', state: 'UP', lat: 26.8467, lng: 80.9462 },
+  { id: 'BSO-ER-PAT', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Patna', state: 'BR', lat: 25.5941, lng: 85.1376 },
+  { id: 'BSO-ER-DHN', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Dhanbad', state: 'JH', lat: 23.7957, lng: 86.4304 },
+  { id: 'BSO-ER-JSR', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Jamshedpur', state: 'JH', lat: 22.8046, lng: 86.2029 },
+  { id: 'BSO-ER-ROU', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Rourkela', state: 'OD', lat: 22.2604, lng: 84.8540 },
+  { id: 'BSO-ER-CTC', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Cuttack', state: 'OD', lat: 20.4625, lng: 85.8828 },
+  { id: 'BSO-ER-GHY', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Guwahati', state: 'AS', lat: 26.1445, lng: 91.7362 },
+  { id: 'BSO-ER-SHL', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Shillong', state: 'ML', lat: 25.5788, lng: 91.8933 },
+  { id: 'BSO-ER-AGT', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Agartala', state: 'TR', lat: 23.8315, lng: 91.2868 },
+  { id: 'BSO-ER-ITN', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Itanagar', state: 'AR', lat: 27.0844, lng: 93.6053 },
+  { id: 'BSO-ER-IMP', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Imphal', state: 'MN', lat: 24.8170, lng: 93.9368 },
+  { id: 'BSO-ER-AIZ', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Aizawl', state: 'MZ', lat: 23.7271, lng: 92.7176 },
+  { id: 'BSO-ER-KOH', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Kohima', state: 'NL', lat: 25.6747, lng: 94.1086 },
+  { id: 'BSO-ER-GTK', type: 'bso_er', name: 'Branch Sales Office (ER)', city: 'Gangtok', state: 'SK', lat: 27.3389, lng: 88.6065 },
+  { id: 'BSO-WR-AHD', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Ahmedabad', state: 'GJ', lat: 23.0225, lng: 72.5714 },
+  { id: 'BSO-WR-IND', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Indore', state: 'MP', lat: 22.7196, lng: 75.8577 },
+  { id: 'BSO-WR-PUN', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Pune', state: 'MH', lat: 18.5204, lng: 73.8567 },
+  { id: 'BSO-WR-NAG', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Nagpur', state: 'MH', lat: 21.1458, lng: 79.0882 },
+  { id: 'BSO-WR-RAI', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Raipur', state: 'CG', lat: 21.2514, lng: 81.6296 },
+  { id: 'BSO-WR-BHI', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Bhilai', state: 'CG', lat: 21.1938, lng: 81.3810 },
+  { id: 'BSO-WR-JAB', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Jabalpur', state: 'MP', lat: 23.1815, lng: 79.9864 },
+  { id: 'BSO-WR-BHO', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Bhopal', state: 'MP', lat: 23.2599, lng: 77.4126 },
+  { id: 'BSO-WR-BAR', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Vadodara', state: 'GJ', lat: 22.3072, lng: 73.1812 },
+  { id: 'BSO-WR-SUR', type: 'bso_wr', name: 'Branch Sales Office (WR)', city: 'Surat', state: 'GJ', lat: 21.1702, lng: 72.8311 },
+  { id: 'BSO-SR-BLR', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Bangalore', state: 'KA', lat: 12.9716, lng: 77.5946 },
+  { id: 'BSO-SR-CHN', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Chennai', state: 'TN', lat: 13.0827, lng: 80.2707 },
+  { id: 'BSO-SR-CBE', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Coimbatore', state: 'TN', lat: 11.0168, lng: 76.9558 },
+  { id: 'BSO-SR-COK', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Kochi', state: 'KL', lat: 9.9312, lng: 76.2673 },
+  { id: 'BSO-SR-TVM', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Trivandrum', state: 'KL', lat: 8.5241, lng: 76.9366 },
+  { id: 'BSO-SR-SBD', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Secunderabad', state: 'TS', lat: 17.4399, lng: 78.4983 },
+  { id: 'BSO-SR-VSKP', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Visakhapatnam', state: 'AP', lat: 17.6868, lng: 83.2185 },
+  { id: 'BSO-SR-MDU', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Madurai', state: 'TN', lat: 9.9252, lng: 78.1198 },
+  { id: 'BSO-SR-PDY', type: 'bso_sr', name: 'Branch Sales Office (SR)', city: 'Puducherry', state: 'PY', lat: 11.9416, lng: 79.8083 },
+];
+
 // Friendly root route
 app.get('/', (req, res) => {
   const base = `${req.protocol}://${req.get('host')}`;
@@ -384,13 +505,16 @@ const users = [
   { id: 2, email: 'manager@sail.test', role: 'manager' },
   { id: 3, email: 'yard@sail.test', role: 'yard' },
   { id: 4, email: 'cmo@sail.test', role: 'cmo' },
+  // Crew user for simulation controls
+  { id: 5, email: 'crew@sail.test', role: 'crew' },
 ];
 // OTP recipient overrides (send OTP to these real inboxes for given usernames)
 const OTP_RECIPIENT_MAP = {
   'admin@sail.test': 'head.qsteel@gmail.com',
   'manager@sail.test': 'mohammadshezanekram@gmail.com',
   'yard@sail.test': 'khalifa182005@gmail.com',
-  'cmo@sail.test': 'head.qsteel@gmail.com'
+  'cmo@sail.test': 'head.qsteel@gmail.com',
+  'crew@sail.test': 'head.qsteel@gmail.com'
 };
 // Allow customer email pattern for demo
 function resolveUserByEmail(email) {
@@ -586,6 +710,26 @@ function auth(role) {
   };
 }
 
+// Multi-role auth: allow any of the given roles (or admin)
+function authAny(roles = []) {
+  return (req, res, next) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.replace('Bearer ', '');
+    try {
+      const payload = jwt.verify(token, JWT_SECRET);
+      if (Array.isArray(roles) && roles.length) {
+        if (payload.role !== 'admin' && !roles.includes(payload.role)) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
+      req.user = payload;
+      next();
+    } catch (e) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+  };
+}
+
 app.get('/kpis', auth(), async (req, res) => {
   const cacheKey = 'kpis:v1';
   const cached = await cacheGet(cacheKey);
@@ -747,6 +891,62 @@ app.post('/ai/forecast', auth(), async (req, res) => {
   const rake = req.body?.rake;
   const suggestion = MOCK_DATA.forecast.find(f => f.rake === rake);
   res.json({ forecast, suggestedRoute: suggestion?.suggestedRoute });
+});
+
+// Simple ETA mock endpoint: accepts sourcePlant (BKSC/DGR/ROU/BPHB) and destination string
+// Optional: currentLocation, speedKph, dwellHours
+app.post('/ai/eta', auth(), (req, res) => {
+  try {
+    const schema = z.object({
+      sourcePlant: z.enum(['BKSC','DGR','ROU','BPHB']).optional(),
+      source: z.string().optional(),
+      destination: z.string(),
+      currentLocation: z.string().optional(),
+      speedKph: z.number().positive().optional(),
+      dwellHours: z.number().nonnegative().optional(),
+      departedAt: z.string().optional(),
+      context: z.string().optional(),
+    });
+    const parsed = schema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+    const { sourcePlant, source, destination, currentLocation, speedKph = 50, dwellHours = 3, departedAt, context } = parsed.data;
+  const plantCity = { BKSC: 'Bokaro', DGR: 'Durgapur', ROU: 'Rourkela', BPHB: 'Bhilai' }[sourcePlant || 'BKSC'] || (source || 'Bokaro');
+  const from = currentLocation || plantCity;
+  const to = destination.split(',')[0] || destination;
+  const distanceKm = getDistance(from, to);
+  const congestionMul = 1 + (Math.random() * 0.3); // up to +30%
+  const weatherMul = 1 + (Math.random() * 0.15);   // up to +15%
+    const transitHours = Math.max(1, (distanceKm / speedKph) * congestionMul * weatherMul) + dwellHours;
+    const etaBase = departedAt ? new Date(departedAt).getTime() : Date.now();
+    const eta = new Date(etaBase + transitHours * 3600 * 1000).toISOString();
+    // Confidence decreases as congestion/weather multipliers rise
+    const noise = (Math.random()*0.06) - 0.03; // +/- 0.03
+    const rawConf = 0.9 - (Math.max(0, congestionMul - 1) * 0.4) - (Math.max(0, weatherMul - 1) * 0.6) + noise;
+    const confidence = Number(Math.max(0.5, Math.min(0.98, rawConf)).toFixed(2));
+    const risk = {
+      congestion: congestionMul > 1.25 ? 'high' : congestionMul > 1.1 ? 'medium' : 'low',
+      weather: weatherMul > 1.08 ? 'rain' : 'clear'
+    };
+    const result = {
+      eta,
+      transitHours: Number(transitHours.toFixed(1)),
+      confidence,
+      route: { from, to, distanceKm: Number(distanceKm.toFixed(1)) },
+      multipliers: { congestion: Number(congestionMul.toFixed(2)), weather: Number(weatherMul.toFixed(2)) },
+    };
+    try { pushEvent({ type: 'customer_eta_recalc', page: context ? `/customer/${context}` : '/ai/eta', action: 'recalc_eta', role: req.user?.role||'guest', user: req.user?.email||'', meta: { sourcePlant, source, destination, currentLocation, speedKph, dwellHours, result }, ts: Date.now() }); } catch {}
+    return res.json({
+      eta,
+      transitHours: Number(transitHours.toFixed(1)),
+      confidence,
+      factors: { speedKph, dwellHours },
+      route: { from, to, distanceKm: Number(distanceKm.toFixed(1)) },
+      multipliers: { congestion: Number(congestionMul.toFixed(2)), weather: Number(weatherMul.toFixed(2)) },
+      risk,
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'eta_failed', detail: e?.message || String(e) });
+  }
 });
 
 // Ledger endpoints
@@ -1925,9 +2125,17 @@ app.post('/yard/confirm-creation', auth('yard'), async (req, res) => {
 // CMO APIs (mock)
 // =========================
 app.get('/api/v1/cmo/summary', auth('cmo'), (req, res) => {
+  const yards = ([]).concat(req.query.yard||[]).map(String);
   const today = new Date().toISOString().slice(0,10);
-  const backlog = (MOCK_DATA.rakes||[]).filter(r=> String(r.status||'').toLowerCase()!=='dispatched').length;
-  const kpis = { backlog, stockyardUtil: 0.72, slaRisk: 0.18, ecoScore: 0.66, date: today };
+  const rakes = (MOCK_DATA.rakes||[]);
+  const filtered = yards.length ? rakes.filter(r => {
+    // naive mapping: use destination text match against yard name
+    return yards.some(y => (r.destination||'').toLowerCase().includes(String(y).toLowerCase()));
+  }) : rakes;
+  const backlog = filtered.filter(r=> String(r.status||'').toLowerCase()!=='dispatched').length;
+  const util = filtered.length ? filtered.filter(r=> (r.status||'').toLowerCase()==='loading').length/filtered.length : 0.72;
+  const kpis = { backlog, stockyardUtil: util, slaRisk: 0.18, ecoScore: 0.66, date: today, yards };
+  try { pushEvent({ type: 'cmo_filter', page: '/api/v1/cmo/summary', action: 'filter_yards', user: req.user?.email||'', role: req.user?.role||'cmo', meta: { yards }, ts: Date.now() }); } catch {}
   res.json({ kpis, alerts: MOCK_DATA.alerts?.slice(0,5) || [] });
 });
 
@@ -2587,6 +2795,498 @@ app.get('/customer/orders/:id', auth('customer'), async (req, res) => {
   res.json({ order: o });
 });
 
+// Project sites listing (role: manager/admin/cmo/customer minimal). For demo, return all projects.
+app.get('/customer/projects', auth(), (req, res) => {
+  try {
+    // Optional filters: cmo, city, product
+    const cmo = req.query.cmo ? String(req.query.cmo).toLowerCase() : '';
+    const city = req.query.city ? String(req.query.city).toLowerCase() : '';
+    const product = req.query.product ? String(req.query.product).toLowerCase() : '';
+    let list = CUSTOMER_PROJECTS.slice();
+    if (cmo) list = list.filter(p => (p.nearestCMO||'').toLowerCase().includes(cmo));
+    if (city) list = list.filter(p => (p.city||'').toLowerCase().includes(city));
+    if (product) list = list.filter(p => (p.products||[]).some(x => String(x).toLowerCase().includes(product)));
+    res.json({ projects: list });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_list_projects', detail: e?.message || String(e) });
+  }
+});
+
+// SAIL Network points (static). Icons determined by "type" on the client.
+app.get('/network/sail', auth(), (req, res) => {
+  try {
+    const type = req.query.type ? String(req.query.type).toLowerCase() : '';
+    let items = (typeof SAIL_NETWORK !== 'undefined' ? SAIL_NETWORK : []);
+    if (type) items = items.filter(p => String(p.type||'').toLowerCase() === type);
+    res.json({ points: items });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_list_network', detail: e?.message || String(e) });
+  }
+});
+
+// Major projects list (for CMO/Manager/Yard/Admin)
+app.get('/projects/major', auth(), (req, res) => {
+  try {
+    res.json({ projects: MAJOR_PROJECTS });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_list_major_projects' });
+  }
+});
+
+// AI/ML planner: uses recent stats (mock) and explains cost reasons
+app.post('/ai/plan', auth('cmo'), (req, res) => {
+  const schema = z.object({
+    product: z.string(), quantity: z.number().positive(), destination: z.string(), priority: z.enum(['Normal','Urgent']).default('Normal'),
+    multiCity: z.boolean().optional()
+  });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { product, quantity, destination, priority, multiCity } = parsed.data;
+  const base = estimateOrder({ cargo: product, qtyTons: quantity, sourcePlant: 'BKSC', destination, priority });
+  const demandFactor = 1 + (product.toLowerCase().includes('tmt') ? 0.08 : 0.04);
+  const tax = Math.round(base.cost * 0.18);
+  const fuel = Math.round(base.distanceKm * 0.9);
+  const delayRisk = Math.round(base.cost * 0.03);
+  const total = Math.round(base.cost * demandFactor + tax + fuel + delayRisk);
+  const reasons = [
+    { label: 'Demand surge', impact: Math.round(base.cost * (demandFactor-1)) },
+    { label: 'GST/Taxes', impact: tax },
+    { label: 'Fuel & freight', impact: fuel },
+    { label: 'Delay risk hedge', impact: delayRisk },
+  ];
+  const route = multiCity ? ['BKSC → DGR','DGR → ROU','ROU → '+ (destination.split(',')[0]||destination)] : ['BKSC → ' + (destination.split(',')[0]||destination)];
+  res.json({
+    suggestion: { route, eta: base.eta, ecoHint: base.ecoHint },
+    cost: { base: base.cost, total, reasons },
+    footprint: { distanceKm: base.distanceKm, carbonTons: base.carbonTons },
+  });
+});
+
+// Register a new customer (ID/Password) by CMO
+app.post('/cmo/customer/register', auth('cmo'), (req, res) => {
+  const schema = z.object({ company: z.string(), email: z.string().email(), password: z.string().min(6) });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { company, email, password } = parsed.data;
+  if (CUSTOMERS_BY_EMAIL.get(email)) return res.status(409).json({ error: 'email_exists' });
+  const id = crypto.randomUUID?.() || 'cust-' + Math.random().toString(36).slice(2);
+  // persist in in-memory stores with hash so that /auth/customer/login works
+  (async()=>{
+    const passwordHash = await hashPassword(password);
+    const profile = { customerId: id, name: company, company, email, phone: '', gstin: '', passwordHash, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
+    CUSTOMERS.set(id, profile);
+    CUSTOMERS_BY_EMAIL.set(email, profile);
+  })().then(()=>{
+    res.json({ ok: true, id, email });
+  }).catch(e=> res.status(500).json({ error: 'failed_to_register', detail: e?.message || String(e) }));
+});
+
+// Export plan as PDF (stub contents)
+app.post('/cmo/plan/export.pdf', auth('cmo'), (req, res) => {
+  const schema = z.object({ plan: z.any() });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid' });
+  res.setHeader('Content-Type','application/pdf');
+  res.setHeader('Content-Disposition','attachment; filename="plan.pdf"');
+  const doc = new PDFDocument({ size: 'A4', margin: 50 });
+  doc.pipe(res);
+  doc.fontSize(16).text('AI/ML Order Plan');
+  doc.moveDown(); doc.fontSize(10).text(JSON.stringify(parsed.data.plan,null,2));
+  doc.end();
+});
+
+// CSV export for plan
+app.post('/cmo/plan/export.csv', auth('cmo'), (req, res) => {
+  const schema = z.object({ plan: z.any() });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid' });
+  const plan = parsed.data.plan || {};
+  const lines = ['key,value'];
+  Object.entries(plan).forEach(([k,v])=>{
+    if (Array.isArray(v)) {
+      lines.push(`${k},"${v.join(' | ')}"`);
+    } else if (v && typeof v === 'object') {
+      lines.push(`${k},"${JSON.stringify(v)}"`);
+    } else {
+      lines.push(`${k},${v}`);
+    }
+  });
+  const csv = lines.join('\n');
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="plan.csv"');
+  res.send(csv);
+});
+
+// CMO order intake: create customer if new, generate credentials, create order and attach AI plan
+app.post('/cmo/order/new', auth('cmo'), async (req, res) => {
+  const schema = z.object({
+    company: z.string(),
+    email: z.string().email().optional(),
+    product: z.string(),
+    quantity: z.number().positive(),
+    destination: z.string(),
+    priority: z.enum(['Normal','Urgent']).default('Normal')
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { company, email, product, quantity, destination, priority } = parsed.data;
+
+  // ensure customer exists
+  let customerProfile = email ? CUSTOMERS_BY_EMAIL.get(email) : null;
+  let generated = null;
+  if (!customerProfile) {
+    const password = Math.random().toString(36).slice(2, 10);
+    const customerId = crypto.randomUUID?.() || 'cust-' + Math.random().toString(36).slice(2);
+    const passwordHash = await hashPassword(password);
+    customerProfile = { customerId, name: company, company, email: email || `${company.toLowerCase().replace(/\s+/g,'')}@example.com`, phone: '', gstin: '', passwordHash, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
+    CUSTOMERS.set(customerId, customerProfile);
+    CUSTOMERS_BY_EMAIL.set(customerProfile.email, customerProfile);
+    generated = { customerId, email: customerProfile.email, password };
+  }
+
+  // Create order for this customer
+  const orderId = crypto.randomUUID?.() || 'ord-' + Math.random().toString(36).slice(2);
+  const sourcePlant = 'BKSC';
+  const est = estimateOrder({ cargo: product, qtyTons: quantity, sourcePlant, destination, priority });
+  const order = { orderId, customerId: customerProfile.customerId, cargo: product, quantityTons: quantity, sourcePlant, destination, priority, notes: '', status: 'Pending', createdAt: new Date().toISOString(), estimate: est, rakeId: null, history: [{ ts: Date.now(), status: 'Pending' }] };
+  ORDERS.set(orderId, order);
+  const arr = ORDERS_BY_CUSTOMER.get(order.customerId) || []; arr.push(orderId); ORDERS_BY_CUSTOMER.set(order.customerId, arr);
+
+  // attach AI plan with 14-day stats mock
+  const stats14d = Array.from({ length: 14 }).map((_,i)=> ({ day: i+1, routesAvailable: Math.floor(10+Math.random()*5), weatherIndex: Number((0.7+Math.random()*0.3).toFixed(2)), delays: Math.floor(Math.random()*4) }));
+  const demandFactor = 1 + (product.toLowerCase().includes('tmt') ? 0.08 : 0.04);
+  const tax = Math.round(est.cost * 0.18);
+  const fuel = Math.round(est.distanceKm * 0.9);
+  const delayRisk = Math.round(est.cost * 0.03);
+  const total = Math.round(est.cost * demandFactor + tax + fuel + delayRisk);
+  const plan = {
+    suggestion: { route: ['BKSC → ' + (destination.split(',')[0]||destination)], eta: est.eta, ecoHint: est.ecoHint },
+    cost: { base: est.cost, total, reasons: [
+      { label: 'Demand surge', impact: Math.round(est.cost*(demandFactor-1)) },
+      { label: 'GST/Taxes', impact: tax },
+      { label: 'Fuel & freight', impact: fuel },
+      { label: 'Delay risk hedge', impact: delayRisk }
+    ] },
+    footprint: { distanceKm: est.distanceKm, carbonTons: est.carbonTons },
+    stats14d
+  };
+
+  try { pushEvent({ type: 'cmo_order_created', page: '/cmo/order/new', action: 'create', role: 'cmo', user: req.user?.email||'', meta: { orderId, company }, ts: Date.now() }); } catch {}
+  io.emit('notification', { audience: 'manager', type: 'order_created', orderId, company, priority });
+  res.json({ ok: true, order, plan, credentials: generated || undefined });
+});
+
+// CMO orders history
+app.get('/cmo/orders', auth('cmo'), (req, res) => {
+  const orders = Array.from(ORDERS.values()).sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+  res.json({ orders });
+});
+
+// CMO orders CSV
+app.get('/cmo/orders.csv', auth('cmo'), (req, res) => {
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  const header = 'orderId,company,email,cargo,quantityTons,sourcePlant,destination,priority,status,createdAt';
+  const rows = Array.from(ORDERS.values()).map(o => {
+    const c = CUSTOMERS.get(o.customerId);
+    return [o.orderId, c?.company||c?.name||'', c?.email||'', o.cargo, o.quantityTons, o.sourcePlant, o.destination, o.priority, o.status, o.createdAt].map(esc).join(',');
+  });
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="cmo-orders.csv"');
+  res.send([header, ...rows].join('\n'));
+});
+
+// Crew: start trip simulation for a rake (4 min, update every 5s)
+app.post('/crew/trip/start', authAny(['yard','crew']), (req, res) => {
+  const schema = z.object({ rakeId: z.string(), path: z.array(z.object({ name: z.string(), lat: z.number(), lng: z.number() })).min(2) });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { rakeId, path } = parsed.data;
+  let i = 0; const totalTicks = Math.min(48, Math.ceil((4*60)/5));
+  const pos = MOCK_DATA.positions.find(p => p.id === rakeId) || { id: rakeId, speed: 40, temp: 30, stops: path };
+  if (!MOCK_DATA.positions.find(p => p.id === rakeId)) MOCK_DATA.positions.push(pos);
+  const timer = setInterval(() => {
+    const idx = Math.min(path.length-1, Math.floor((i/(totalTicks-1)) * (path.length-1)));
+    const s = path[idx]; pos.lat = s.lat; pos.lng = s.lng; pos.currentLocationName = s.name; io.emit('positions', MOCK_DATA.positions);
+    i++; if (i>= totalTicks) { clearInterval(timer); io.emit('notification', { audience: 'all', type: 'rake_arrived', rakeId }); }
+  }, 5000);
+  // First update after ~2s to satisfy demo requirement
+  setTimeout(() => { try { io.emit('positions', MOCK_DATA.positions); } catch {} }, 2000);
+  res.json({ ok: true, rakeId, ticks: totalTicks });
+});
+
+// Crew: predefined delay/stop reasons
+const CREW_REASONS = ['Signal', 'Technical', 'Weather', 'Congestion', 'Operational'];
+app.get('/crew/reasons', authAny(['crew','yard','manager','cmo']), (_req, res) => res.json({ reasons: CREW_REASONS }));
+
+// Crew: report stop/delay
+app.post('/crew/trip/delay', authAny(['crew','yard']), (req, res) => {
+  const schema = z.object({ rakeId: z.string(), reason: z.string() });
+  const parsed = schema.safeParse(req.body||{});
+  if (!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { rakeId, reason } = parsed.data;
+  const pos = MOCK_DATA.positions.find(p => p.id === rakeId);
+  if (pos) { pos.status = 'Halted'; pos.speed = 0; }
+  const evt = { type: 'crew_delay', page: '/crew', action: 'delay', role: req.user?.role||'crew', user: req.user?.email||'', meta: { rakeId, reason }, ts: Date.now() };
+  try { pushEvent(evt); } catch {}
+  io.emit('notification', { audience: 'all', type: 'rake_delay', rakeId, reason });
+  res.json({ ok: true });
+});
+
+app.post('/crew/trip/stop', authAny(['crew','yard']), (req, res) => {
+  const schema = z.object({ rakeId: z.string(), reason: z.string() });
+  const parsed = schema.safeParse(req.body||{});
+  if (!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { rakeId, reason } = parsed.data;
+  const pos = MOCK_DATA.positions.find(p => p.id === rakeId);
+  if (pos) { pos.status = 'Stopped'; pos.speed = 0; }
+  try { pushEvent({ type: 'crew_stop', page: '/crew', action: 'stop', role: req.user?.role||'crew', user: req.user?.email||'', meta: { rakeId, reason }, ts: Date.now() }); } catch {}
+  io.emit('notification', { audience: 'all', type: 'rake_stopped', rakeId, reason });
+  res.json({ ok: true });
+});
+
+// Crew fatigue mock
+app.get('/crew/fatigue', authAny(['manager','cmo','yard','crew']), (_req, res) => {
+  const crews = Array.from({ length: 6 }).map((_,i)=> ({ id: 'CRW'+(i+1), hoursLastWeek: 40 + Math.floor(Math.random()*12), dutyTodayHrs: Math.floor(Math.random()*10), fatigueScore: Number((0.4 + Math.random()*0.5).toFixed(2)) }));
+  res.json({ crews, generatedAt: new Date().toISOString() });
+});
+
+// Manager: inventory check for shortages and raw material trigger suggestion
+app.get('/manager/inventory/check', auth('manager'), (req, res) => {
+  const result = (MOCK_DATA.stockDemand||[]).map(r => ({ yard: r.yard, grade: r.grade, stock: r.stock, demand: r.demand, shortage: Math.max(0, r.demand - r.stock) }));
+  const severe = result.filter(x => x.shortage > 100);
+  const suggestion = severe.length >= 5 ? 'Trigger raw material request from CMO' : 'Monitor';
+  res.json({ items: result, severe: severe.length, suggestion });
+});
+
+// Manager: simple merge suggestions for orders on same route/destination
+app.get('/manager/orders/suggestions', auth('manager'), (req, res) => {
+  const pending = Array.from(ORDERS.values()).filter(o => ['Pending','Approved'].includes(o.status));
+  const groups = pending.reduce((m,o)=>{ const key = `${o.sourcePlant}|${(o.destination||'').split(',')[0]}`; (m[key]=m[key]||[]).push(o); return m; }, {});
+  const suggestions = Object.entries(groups).filter(([_,arr])=> arr.length>=2).map(([key,arr])=>{
+    const [src,dst] = key.split('|');
+    const totalQty = arr.reduce((s,o)=> s + (o.quantityTons||0),0);
+    return { route: `${src}→${dst}`, orders: arr.map(x=>x.orderId), totalQty, action: 'Consider coupling/merge' };
+  });
+  res.json({ suggestions });
+});
+
+// Manager: perform merge/couple on suggested orders (demo: assign a common rake/group)
+app.post('/manager/orders/merge', auth('manager'), (req, res) => {
+  const schema = z.object({ orderIds: z.array(z.string()).min(2) });
+  const parsed = schema.safeParse(req.body||{});
+  if(!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { orderIds } = parsed.data;
+  const groupId = 'MRG-' + (crypto.randomUUID?.().slice(0,8) || Math.random().toString(36).slice(2,10));
+  const rakeId = 'RK' + Math.floor(1000 + Math.random()*9000);
+  const updated = [];
+  for (const id of orderIds) {
+    const o = ORDERS.get(id); if (!o) continue;
+    o.groupId = groupId; o.status = o.status === 'Pending' ? 'Approved' : o.status; o.rakeId = o.rakeId || rakeId; o.history = (o.history||[]).concat([{ ts: Date.now(), status: 'Coupled' }]);
+    ORDERS.set(id, o); updated.push(o);
+  }
+  try { pushEvent({ type: 'orders_merge', page: '/orders/status', action: 'merge', role: 'manager', user: req.user?.email||'', meta: { groupId, rakeId, count: updated.length }, ts: Date.now() }); } catch {}
+  io.emit('notification', { audience: 'all', type: 'orders_merged', message: `Coupled ${updated.length} orders into ${rakeId}`, groupId, rakeId });
+  res.json({ ok: true, groupId, rakeId, orders: updated });
+});
+
+function haversineKm(a, b) {
+  const R = 6371; // km
+  const toRad = (x)=> x * Math.PI / 180;
+  const dLat = toRad((b.lat||0) - (a.lat||0));
+  const dLon = toRad((b.lng||0) - (a.lng||0));
+  const lat1 = toRad(a.lat||0); const lat2 = toRad(b.lat||0);
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+// Compare alternative routes: compute distance, ETA and CO2 using simple coefficients
+app.post('/ai/alt/compare', authAny(['manager','cmo','yard','admin']), (req, res) => {
+  const schema = z.object({
+    plant: z.string(), cmo: z.string(), cargo: z.string().default('steel'), tonnage: z.number().default(3000),
+    routes: z.array(z.object({ id: z.string(), waypoints: z.array(z.object({ name: z.string().optional(), lat: z.number(), lng: z.number() })).min(2) })).min(1)
+  });
+  const parsed = schema.safeParse(req.body||{});
+  if (!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { plant, cmo, cargo, tonnage, routes } = parsed.data;
+  const baseEfPerKmPerTon = 0.000025; // tCO2 per km per ton (demo)
+  const avgSpeed = 50; // km/h
+  const dwellPerStopH = 0.15; // 9 minutes per stop
+  const perKmCost = 1.2; // currency/km/ton (demo)
+  const out = routes.map(r => {
+    let dist = 0; for (let i=1;i<r.waypoints.length;i++) dist += haversineKm(r.waypoints[i-1], r.waypoints[i]);
+    const stops = Math.max(0, r.waypoints.length - 2);
+    const hours = dist / avgSpeed + (stops * dwellPerStopH);
+    const co2 = dist * tonnage * baseEfPerKmPerTon;
+    const cost = dist * tonnage * perKmCost;
+    return { id: r.id, distanceKm: Math.round(dist), etaHours: Number(hours.toFixed(1)), co2Tons: Number(co2.toFixed(2)), cost: Math.round(cost) };
+  });
+  const bestCost = out.reduce((a,b)=> a.cost <= b.cost ? a : b, out[0]);
+  const bestEta = out.reduce((a,b)=> a.etaHours <= b.etaHours ? a : b, out[0]);
+  const bestCo2 = out.reduce((a,b)=> a.co2Tons <= b.co2Tons ? a : b, out[0]);
+  try { pushEvent({ type: 'compare_routes', page: '/map', action: 'compare', role: req.user?.role||'guest', user: req.user?.email||'', meta: { plant, cmo, cargo, tonnage, routes: out }, ts: Date.now() }); } catch {}
+  res.json({ routes: out, bestBy: { cost: bestCost.id, eta: bestEta.id, co2: bestCo2.id } });
+});
+
+// -------------------------------------------------
+// Canonical Planner Commit Endpoint (+ Map overlay)
+// -------------------------------------------------
+// Persists a chosen route against one or more orders, assigns rake/group when missing,
+// appends order history, emits notifications, and returns a confirmation payload.
+const PLAN_COMMITS = new Map(); // commitId -> record
+const MAP_OVERLAY_TOKENS = new Map(); // token -> { waypoints, createdAt, ttlSec, payload }
+
+app.post('/planner/plan/commit', authAny(['manager','cmo','admin']), (req, res) => {
+  const schema = z.object({
+    plant: z.string(),
+    cmo: z.string(),
+    alternative: z.object({ id: z.string(), name: z.string().optional() }).optional(),
+    waypoints: z.array(z.object({ name: z.string().optional(), lat: z.number(), lng: z.number() })).min(2).optional(),
+    metrics: z.object({ distanceKm: z.number().optional(), etaHours: z.number().optional(), co2Tons: z.number().optional(), cost: z.number().optional() }).optional(),
+    orderIds: z.array(z.string()).optional(),
+    notes: z.string().optional()
+  });
+  const parsed = schema.safeParse(req.body || {});
+  if (!parsed.success) return res.status(400).json({ error: 'invalid', issues: parsed.error.issues });
+  const { plant, cmo, alternative, waypoints = [], metrics = {}, orderIds = [], notes = '' } = parsed.data;
+  const committedAt = Date.now();
+  const commitId = 'CMT-' + (crypto.randomUUID?.().slice(0, 8) || Math.random().toString(36).slice(2, 10));
+  const groupId = 'GRP-' + (crypto.randomUUID?.().slice(0, 6) || Math.random().toString(36).slice(2, 8));
+  const rakeId = 'RK' + Math.floor(1000 + Math.random() * 9000);
+
+  // Overlay token for Map page to retrieve coordinates directly if desired
+  const ttlSec = 10 * 60;
+  const overlayToken = 'ovr-' + (crypto.randomUUID?.().slice(0, 10) || Math.random().toString(36).slice(2, 12));
+  MAP_OVERLAY_TOKENS.set(overlayToken, { waypoints, createdAt: committedAt, ttlSec, payload: { plant, cmo, alternative, metrics } });
+
+  // Persist lightweight commit record (in-memory; DB optional future)
+  const record = { commitId, plant, cmo, alternative: alternative || null, waypoints, metrics, groupId, rakeId, orderIds, notes, committedAt, committedBy: req.user?.email || '' };
+  PLAN_COMMITS.set(commitId, record);
+
+  // If orders provided, annotate them with committed route info
+  const updated = [];
+  if (Array.isArray(orderIds) && orderIds.length) {
+    for (const id of orderIds) {
+      const o = ORDERS.get(id);
+      if (!o) continue;
+      // Attach committed route metadata
+      o.committedRoute = {
+        id: alternative?.id || 'alt-custom',
+        name: alternative?.name || '',
+        plant,
+        cmo,
+        waypoints,
+        metrics,
+        committedAt,
+        committedBy: req.user?.email || '',
+        overlayToken,
+        overlayExpiresAt: committedAt + ttlSec * 1000
+      };
+      // Assign group/rake if not already set
+      o.groupId = o.groupId || groupId;
+      o.rakeId = o.rakeId || rakeId;
+      // History entry
+      o.history = (o.history || []).concat([{ ts: committedAt, status: 'Committed Route', note: alternative?.id || 'route' }]);
+      ORDERS.set(id, o);
+      updated.push({ orderId: o.orderId, rakeId: o.rakeId, groupId: o.groupId });
+    }
+    try { io.emit('notification', { audience: 'all', type: 'route_committed', message: `Committed route ${alternative?.id || ''} for ${updated.length} order(s)`, groupId, rakeId, orders: updated }); } catch {}
+  }
+
+  try { pushEvent({ type: 'plan_commit', page: '/planner', action: 'commit', role: req.user?.role || 'guest', user: req.user?.email || '', meta: { commitId, plant, cmo, alt: alternative?.id, orders: updated.length }, ts: committedAt }); } catch {}
+
+  res.json({ ok: true, commitId, plant, cmo, committedRouteId: alternative?.id || null, groupId, rakeId, overlayToken, orders: updated });
+});
+
+// Short-lived overlay retrieval for Map page (token expires ~10 min)
+app.get('/planner/plan/overlay/:token', auth(), (req, res) => {
+  const token = String(req.params.token || '');
+  const rec = MAP_OVERLAY_TOKENS.get(token);
+  if (!rec) return res.status(404).json({ error: 'not_found' });
+  const ageSec = Math.floor((Date.now() - rec.createdAt) / 1000);
+  if (ageSec > (rec.ttlSec || 600)) {
+    MAP_OVERLAY_TOKENS.delete(token);
+    return res.status(410).json({ error: 'expired' });
+  }
+  res.json({ waypoints: rec.waypoints, meta: rec.payload, createdAt: rec.createdAt, ttlSec: rec.ttlSec });
+});
+
+// Role-prefixed aliases that forward to canonical commit
+['manager','cmo','admin'].forEach(prefix => {
+  app.post(`/${prefix}/plan/commit`, auth(prefix === 'admin' ? 'admin' : undefined), (req, res) => {
+    req.url = '/planner/plan/commit';
+    app._router.handle(req, res, () => {});
+  });
+});
+
+// Append more major projects (from provided mock sheet) near their nearest CMO city coords
+try {
+  if (Array.isArray(MAJOR_PROJECTS)) {
+    MAJOR_PROJECTS.push(
+      { id: 'MP-JK-01', name: 'Kishtwar Pakal Dul Power Project, J&K', products: ['Structural Steel','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'BSP/DSP/ISP → Delhi → J&K', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090, contact: { name: 'Proj Office', email: 'pkgdul@infra.test' }, kpis: { quantityTons: 12000, eta: 'Q4 FY25', co2: '—' } },
+      { id: 'MP-DEL-03', name: 'Delhi Katra Expressway (Packages)', products: ['Plates','TMT Bars'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Delhi', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090 },
+      { id: 'MP-UK-01', name: 'Vishnugad Pipalkoti Hydro Electric Project', products: ['Structural Steel','TMT Bars'], sources: ['BSP','DSP','ISP'], route: 'Multi-plant → Delhi → Uttarakhand', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090, contact: { email: 'vishnugad@hydro.test' }, kpis: { quantityTons: 8000, eta: 'Q3 FY25', co2: '—' } },
+      { id: 'MP-HP-02', name: 'Shongtong Karchham Hydro Electric Project', products: ['Structural Steel','Plates'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Delhi → HP', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090 },
+      { id: 'MP-UK-02', name: 'Rishikesh-KarnPrayag Rail Link Project', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Multi-plant → Delhi → Uttarakhand', nearestCMO: 'Delhi', city: 'Delhi', lat: 28.6139, lng: 77.2090 },
+      { id: 'MP-UP-02', name: 'Kanpur Irrigation Project', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Lucknow', nearestCMO: 'Lucknow', city: 'Lucknow', lat: 26.8467, lng: 80.9462 },
+      { id: 'MP-AS-02', name: 'Dhubri Bridge, Assam–Meghalaya', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Kolkata → NJP → Guwahati', nearestCMO: 'Guwahati', city: 'Guwahati', lat: 26.1445, lng: 91.7362, contact: { phone: '+91-99999-12345' }, kpis: { quantityTons: 5000, eta: 'FY26', co2: '—' } },
+      { id: 'MP-WB-02', name: 'NTPC Rammam Hydroelectric Project, Darjeeling', products: ['Structural Steel','Plates'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Howrah → Darjeeling', nearestCMO: 'Kolkata', city: 'Kolkata', lat: 22.5726, lng: 88.3639 },
+      { id: 'MP-OD-02', name: 'Lower Suktel Dam, Bolangir, Odisha', products: ['TMT Bars','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Multi-plant → Bhubaneswar', nearestCMO: 'Bhubaneswar', city: 'Bhubaneswar', lat: 20.2961, lng: 85.8245 },
+      { id: 'MP-TS-02', name: 'Sita Rama Lift Irrigation Project, Telangana', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Vijayawada → Secunderabad', nearestCMO: 'Hyderabad', city: 'Hyderabad', lat: 17.3850, lng: 78.4867, contact: { name: 'Irrigation PMU' }, kpis: { quantityTons: 7000, eta: 'Q1 FY26', co2: '—' } },
+      { id: 'MP-TS-03', name: 'Google Campus, Hyderabad', products: ['Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'DSP/ISP → Vijayawada → Hyderabad', nearestCMO: 'Hyderabad', city: 'Hyderabad', lat: 17.3850, lng: 78.4867 },
+      { id: 'MP-TN-02', name: 'Eversendai Constructions, DLF Taramani', products: ['Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'DSP/ISP → Vijayawada → Chennai', nearestCMO: 'Chennai', city: 'Chennai', lat: 13.0827, lng: 80.2707 },
+      { id: 'MP-TN-03', name: 'B&B Builders – ACS Lalithambigai College', products: ['Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'DSP/ISP → Vijayawada → Chennai', nearestCMO: 'Chennai', city: 'Chennai', lat: 13.0827, lng: 80.2707 },
+      { id: 'MP-KL-02', name: 'M/s KSEB (SHP) Hydro Projects, Kerala', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Multi-plant → Kochi', nearestCMO: 'Cochin', city: 'Kochi', lat: 9.9312, lng: 76.2673 },
+      { id: 'MP-KL-03', name: 'Kitex Textile Park, Kerala', products: ['Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'ISP → Chennai → Kochi', nearestCMO: 'Cochin', city: 'Kochi', lat: 9.9312, lng: 76.2673 },
+      { id: 'MP-MH-02', name: 'Mumbai Ahmedabad High Speed Rail', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Various → Ahmedabad → Mumbai', nearestCMO: 'Mumbai', city: 'Mumbai', lat: 19.0760, lng: 72.8777 },
+      { id: 'MP-MH-03', name: 'Colaba Seepz Metro Line, Mumbai', products: ['Rails','Structural Steel'], sources: ['BSP','DSP','ISP'], route: 'Various → Mumbai', nearestCMO: 'Mumbai', city: 'Mumbai', lat: 19.0760, lng: 72.8777 },
+      { id: 'MP-GJ-02', name: 'AMNS Hazira Expansion 9–15 MTPA, Gujarat', products: ['Plates','Structural Steel'], sources: ['BSP','BSL','DSP','ISP','RSP'], route: 'Various → Ahmedabad/Hazira', nearestCMO: 'Ahmedabad', city: 'Ahmedabad', lat: 23.0225, lng: 72.5714, contact: { email: 'hazira@amns.test' }, kpis: { quantityTons: 15000, eta: 'FY27', co2: '—' } },
+    );
+  }
+} catch {}
+
+// Unified order status list for CMO/Admin/Manager
+// Returns all orders across customers with current status and basic fields
+app.get('/orders/status', auth(), (req, res) => {
+  const role = req.user?.role;
+  if (!['manager','admin','cmo'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const all = Array.from(ORDERS.values());
+    // Optional filters: status, sourcePlant, destination
+    const status = req.query.status ? String(req.query.status).toLowerCase() : '';
+    const src = req.query.sourcePlant ? String(req.query.sourcePlant).toUpperCase() : '';
+    const dest = req.query.destination ? String(req.query.destination).toLowerCase() : '';
+    let list = all;
+    if (status) list = list.filter(o => String(o.status||'').toLowerCase() === status);
+    if (src) list = list.filter(o => String(o.sourcePlant||'').toUpperCase() === src);
+    if (dest) list = list.filter(o => String(o.destination||'').toLowerCase().includes(dest));
+    // project association heuristic: match destination city to a project city
+    const byCity = CUSTOMER_PROJECTS.reduce((m,p)=>{ m[p.city.toLowerCase()] = p; return m; }, {});
+    const items = list.map(o => ({
+      id: o.orderId, status: o.status, cargo: o.cargo, quantityTons: o.quantityTons,
+      sourcePlant: o.sourcePlant, destination: o.destination, priority: o.priority,
+      rakeId: o.rakeId || null,
+      committedRoute: o.committedRoute ? {
+        id: o.committedRoute.id || null,
+        name: o.committedRoute.name || null,
+        plant: o.committedRoute.plant,
+        cmo: o.committedRoute.cmo,
+        metrics: o.committedRoute.metrics || null,
+        committedAt: o.committedRoute.committedAt || null,
+        overlayToken: o.committedRoute.overlayToken || null,
+        overlayExpiresAt: o.committedRoute.overlayExpiresAt || null
+      } : null,
+      project: byCity[(o.destination||'').split(',')[0]?.toLowerCase?.() || ''] || null,
+      createdAt: o.createdAt,
+    }));
+    res.json({ orders: items, total: items.length });
+  } catch (e) {
+    res.status(500).json({ error: 'failed_to_list_orders', detail: e?.message || String(e) });
+  }
+});
+
 // Invoice PDF
 app.get('/customer/orders/:id/invoice.pdf', auth('customer'), async (req, res) => {
   const o = ORDERS.get(req.params.id);
@@ -3035,6 +3735,9 @@ app.post('/events', (req, res) => {
 // Admin usage snapshot: route counters, roles, WS stats, recent events
 app.get('/admin/analytics/usage', auth('admin'), (req, res) => {
   try {
+    const range = String(req.query.range||'24h');
+    const now = Date.now();
+    const since = range==='7d' ? now - 7*24*3600*1000 : range==='30d' ? now - 30*24*3600*1000 : now - 24*3600*1000;
     const routes = Array.from(ROUTE_STATS.entries()).map(([path, v]) => ({
       path,
       count: v.count,
@@ -3043,7 +3746,6 @@ app.get('/admin/analytics/usage', auth('admin'), (req, res) => {
     })).sort((a,b)=> b.count - a.count).slice(0, 200);
     const roleAgg = {};
     routes.forEach(r => r.byRole.forEach(({role, count}) => { roleAgg[role] = (roleAgg[role]||0) + count; }));
-    const since = Date.now() - 24*3600*1000;
     const recent = EVENTS.filter(e => e.ts >= since);
     const eventCounts = recent.reduce((acc,e)=>{ acc[e.type] = (acc[e.type]||0)+1; return acc; },{});
     const ws = {
@@ -3052,7 +3754,7 @@ app.get('/admin/analytics/usage', auth('admin'), (req, res) => {
       byNamespace: WS_STATS.byNamespace,
       avgSessionSec: WS_STATS.durationsMs.length ? Math.round(WS_STATS.durationsMs.reduce((a,b)=>a+b,0)/WS_STATS.durationsMs.length/1000) : 0
     };
-    res.json({ routes, roles: roleAgg, events: { last24h: eventCounts, recent: recent.slice(-100).reverse() }, ws });
+    res.json({ routes, roles: roleAgg, events: { window: range, counts: eventCounts, recent: recent.slice(-100).reverse() }, ws });
   } catch (e) {
     res.status(500).json({ error: 'failed_to_aggregate', detail: e?.message || String(e) });
   }
@@ -3070,6 +3772,32 @@ app.get('/admin/analytics/events.csv', auth('admin'), (req, res) => {
   const rows = items.map(e => [new Date(e.ts).toISOString(), e.user, e.role, e.type, e.page||'', e.action||'', JSON.stringify(e.meta||{})].map(esc).join(','));
   res.setHeader('Content-Type','text/csv');
   res.setHeader('Content-Disposition','attachment; filename="events.csv"');
+  res.send(headers.join(',') + '\n' + rows.join('\n'));
+});
+
+// Admin CSV export for ETA recalcs with filtering
+// Query params: user?=email, from?=ISO, to?=ISO, limit?=N
+app.get('/admin/analytics/eta-recalcs.csv', auth('admin'), (req, res) => {
+  const qUser = (req.query.user ? String(req.query.user) : '').toLowerCase();
+  const fromTs = req.query.from ? Date.parse(String(req.query.from)) : NaN;
+  const toTs = req.query.to ? Date.parse(String(req.query.to)) : NaN;
+  const limit = Math.min(5000, Math.max(1, Number(req.query.limit || 1000)));
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+  };
+  let items = EVENTS.filter(e => e.type === 'customer_eta_recalc');
+  if (!Number.isNaN(fromTs)) items = items.filter(e => e.ts >= fromTs);
+  if (!Number.isNaN(toTs)) items = items.filter(e => e.ts <= toTs);
+  if (qUser) items = items.filter(e => (e.user||'').toLowerCase().includes(qUser));
+  items = items.slice(-limit).reverse();
+  const headers = ['ts','user','role','page','speedKph','dwellHours','source','currentLocation','destination'];
+  const rows = items.map(e => [
+    new Date(e.ts).toISOString(), e.user||'', e.role||'', e.page||'',
+    e.meta?.speedKph ?? '', e.meta?.dwellHours ?? '', e.meta?.source ?? '', e.meta?.currentLocation ?? '', e.meta?.destination ?? ''
+  ].map(esc).join(','));
+  res.setHeader('Content-Type','text/csv');
+  res.setHeader('Content-Disposition','attachment; filename="eta-recalcs.csv"');
   res.send(headers.join(',') + '\n' + rows.join('\n'));
 });
 
