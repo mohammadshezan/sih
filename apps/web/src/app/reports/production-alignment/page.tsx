@@ -110,9 +110,9 @@ export default function ProductionAlignmentPage(){
       {managerData && (
         <section className="space-y-6 mt-4">
           <div className="flex flex-wrap gap-3 items-center text-xs text-gray-400">
-            <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Live Avg Util: {wsMetrics? wsMetrics.avgUtil.toFixed(1)+'%':'—'}</span>
+            <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Live Avg Util: {wsMetrics? toFixedStr(wsMetrics?.avgUtil,1)+'%':'—'}</span>
             <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Live Cost: {wsMetrics? '₹'+wsMetrics.cost.toLocaleString():'—'}</span>
-            <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Live CO₂: {wsMetrics? (wsMetrics.co2?.toFixed(1)+'T'):'—'}</span>
+            <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Live CO₂: {wsMetrics? (toFixedStr(wsMetrics?.co2,1)+'T'):'—'}</span>
             <span className="px-2 py-1 rounded bg-white/5 border border-white/10">Align Score: {wsMetrics? Math.round((wsMetrics.alignmentScore||0)*100)+'%':'—'}</span>
             <button onClick={exportCSV} className="px-3 py-1 rounded bg-indigo-600 text-white text-xs hover:bg-indigo-500">Export CSV</button>
             <button onClick={exportPDF} className="px-3 py-1 rounded bg-green-600 text-white text-xs hover:bg-green-500">Export PDF</button>
@@ -129,13 +129,13 @@ export default function ProductionAlignmentPage(){
                   </tr>
                 </thead>
                 <tbody>
-                  {managerData.map.flows.map((f:any,i:number)=>(
+                  {(Array.isArray(managerData?.map?.flows) ? managerData.map.flows : []).map((f:any,i:number)=>(
                     <tr key={i} className="border-b border-gray-800/50 hover:bg-gray-800/30">
                       <Td>{f.from}</Td>
                       <Td>{f.to}</Td>
                       <Td>{Math.round(f.tons)}</Td>
                       <Td>₹{(f.cost||0).toLocaleString()}</Td>
-                      <Td>{(f.emissions||0).toFixed(1)}T</Td>
+                      <Td>{toFixedStr(f.emissions,1)}T</Td>
                       <Td>{f.sla? '✅':'⚠️'}</Td>
                     </tr>
                   ))}
@@ -149,7 +149,7 @@ export default function ProductionAlignmentPage(){
             <h3 className="font-medium mb-2">🧭 Strategic Priority Matching</h3>
             <p className="text-xs text-gray-400 mb-3">High-value / time-sensitive routes highlighted.</p>
             <ul className="text-sm space-y-1">
-              {managerData.strategic.prioritizedOrders.map((p:any,i:number)=>(<li key={i}>⭐ {p.route} — {p.tons}T ({p.reason})</li>))}
+              {(managerData?.strategic?.prioritizedOrders ?? []).map((p:any,i:number)=>(<li key={i}>⭐ {p.route} — {p.tons}T ({p.reason})</li>))}
             </ul>
           </div>
 
@@ -159,13 +159,13 @@ export default function ProductionAlignmentPage(){
               <h3 className="font-medium mb-2">💸 Cost Alignment Tracker</h3>
               <p className="text-xs text-gray-400 mb-2">Freight + risk exposure</p>
               <div className="grid grid-cols-2 gap-4 text-sm">
-                <div><span className="text-gray-400">Freight:</span><br/>₹{managerData.cost.totalFreight.toLocaleString()}</div>
-                <div><span className="text-gray-400">Demurrage Risk:</span><br/>₹{managerData.cost.demurrageRisk.toLocaleString()}</div>
-                <div><span className="text-gray-400">Penalty Risk:</span><br/>₹{managerData.cost.penaltyRisk.toLocaleString()}</div>
-                <div><span className="text-gray-400">Suggestions:</span><br/>{managerData.cost.suggestions.length}</div>
+                <div><span className="text-gray-400">Freight:</span><br/>₹{(managerData?.cost?.totalFreight||0).toLocaleString()}</div>
+                <div><span className="text-gray-400">Demurrage Risk:</span><br/>₹{(managerData?.cost?.demurrageRisk||0).toLocaleString()}</div>
+                <div><span className="text-gray-400">Penalty Risk:</span><br/>₹{(managerData?.cost?.penaltyRisk||0).toLocaleString()}</div>
+                <div><span className="text-gray-400">Suggestions:</span><br/>{(managerData?.cost?.suggestions?.length||0)}</div>
               </div>
               <ul className="mt-3 text-xs list-disc ml-5 space-y-1">
-                {managerData.cost.suggestions.map((s:any,i:number)=>(<li key={i}>{s.action} — {s.impact}</li>))}
+                {(managerData?.cost?.suggestions ?? []).map((s:any,i:number)=>(<li key={i}>{s.action} — {s.impact}</li>))}
               </ul>
             </div>
 
@@ -173,13 +173,13 @@ export default function ProductionAlignmentPage(){
             <div className="rounded-xl bg-white/5 p-4 border border-white/10">
               <h3 className="font-medium mb-2">♻️ Sustainability Alignment</h3>
               <div className="text-sm grid grid-cols-2 gap-4">
-                <div><span className="text-gray-400">Total CO₂:</span><br/>{managerData.sustainability.totalCO2.toFixed(1)}T</div>
-                <div><span className="text-gray-400">Avg / Rake:</span><br/>{managerData.sustainability.avgPerRake.toFixed(1)}T</div>
-                <div><span className="text-gray-400">Target CO₂:</span><br/>{managerData.sustainability.targetCO2.toFixed(1)}T</div>
-                <div><span className="text-gray-400">Eco Score:</span><br/>{Math.round(managerData.sustainability.ecoScore*100)}%</div>
+                <div><span className="text-gray-400">Total CO₂:</span><br/>{toFixedStr(managerData?.sustainability?.totalCO2, 1)}T</div>
+                <div><span className="text-gray-400">Avg / Rake:</span><br/>{toFixedStr(managerData?.sustainability?.avgPerRake, 1)}T</div>
+                <div><span className="text-gray-400">Target CO₂:</span><br/>{toFixedStr(managerData?.sustainability?.targetCO2, 1)}T</div>
+                <div><span className="text-gray-400">Eco Score:</span><br/>{Math.round(((managerData?.sustainability?.ecoScore)||0)*100)}%</div>
               </div>
               <div className="mt-3 max-h-32 overflow-auto text-xs space-y-1">
-                {managerData.sustainability.rakeEmissions.map((r:any)=>(<div key={r.id}>• {r.id}: {r.emissions.toFixed(1)}T ({r.utilization.toFixed(1)}% util)</div>))}
+                {(managerData?.sustainability?.rakeEmissions ?? []).map((r:any)=>(<div key={r.id}>• {r.id}: {toFixedStr(r.emissions,1)}T ({toFixedStr(r.utilization,1)}% util)</div>))}
               </div>
             </div>
           </div>
@@ -188,7 +188,7 @@ export default function ProductionAlignmentPage(){
             <div className="rounded-xl bg-white/5 p-4 border border-white/10">
               <h3 className="font-medium mb-2">🕒 Timeline & SLA Alignment</h3>
               <div className="space-y-2 text-xs">
-                {managerData.timeline.map((t:any)=> {
+                {(managerData?.timeline ?? []).map((t:any)=> {
                   const spanHrs = (new Date(t.eta).getTime() - new Date(t.start).getTime())/3600000;
                   return (
                     <div key={t.id} className="flex items-center gap-3">
@@ -207,7 +207,7 @@ export default function ProductionAlignmentPage(){
           <div className="rounded-xl bg-white/5 p-4 border border-white/10">
             <h3 className="font-medium mb-2">🤖 AI Alignment Suggestions</h3>
             <ul className="text-sm space-y-2">
-              {managerData.aiSuggestions.map((s:any)=>(
+              {(managerData?.aiSuggestions ?? []).map((s:any)=>(
                 <li key={s.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 bg-gray-800/40 p-2 rounded">
                   <div className="flex-1">⚡ {s.message} {appliedSuggestions.includes(s.id) && <span className="text-green-400 text-xs ml-2">(Applied)</span>}</div>
                   <div className="flex gap-2 text-xs">
@@ -242,19 +242,19 @@ export default function ProductionAlignmentPage(){
           {/* Policy Compliance */}
           <div className="rounded-xl bg-white/5 p-4 border border-white/10">
             <h3 className="font-medium mb-2">🔗 Policy & Compliance Alignment</h3>
-            <div className="text-xs text-gray-400 mb-2">Rules checked: {managerData.policy.rulesChecked}</div>
-            {managerData.policy.violations.length ? (
+            <div className="text-xs text-gray-400 mb-2">Rules checked: {(managerData?.policy?.rulesChecked)||0}</div>
+            {(managerData?.policy?.violations?.length ? (
               <ul className="text-xs space-y-1 text-red-400">
-                {managerData.policy.violations.map((v:any,i:number)=>(<li key={i}>⚠️ {v.rake}: {v.rule} (Current {v.current.toFixed(1)}%)</li>))}
+                {(managerData?.policy?.violations ?? []).map((v:any,i:number)=>(<li key={i}>⚠️ {v.rake}: {v.rule} (Current {toFixedStr(v.current,1)}%)</li>))}
               </ul>
-            ) : <div className="text-xs text-green-400">✅ No violations</div>}
+            ) : <div className="text-xs text-green-400">✅ No violations</div>)}
           </div>
 
           {/* Goal Alignment */}
           <div className="rounded-xl bg-white/5 p-4 border border-white/10">
             <h3 className="font-medium mb-3">🎯 Goal Alignment Dashboard</h3>
             <div className="grid md:grid-cols-3 gap-4 text-sm">
-              {Object.entries(managerData.goals).map(([k,v]:any)=>(
+              {(managerData?.goals ? Object.entries(managerData.goals) : []).map(([k,v]:any)=>(
                 <div key={k} className={`p-3 rounded border ${v.status==='green'?'border-green-500/40 bg-green-500/10':'border-yellow-500/40 bg-yellow-500/10'}`}>
                   <div className="uppercase text-xs tracking-wide text-gray-400">{k}</div>
                   <div className="text-lg font-semibold">{v.value}{k==='utilization'?'%':''}</div>
@@ -262,11 +262,11 @@ export default function ProductionAlignmentPage(){
                 </div>
               ))}
             </div>
-            {managerData.team && (
+            {managerData?.team && (
               <div className="mt-6">
                 <h4 className="font-medium mb-2">🤝 Team & Role Alignment</h4>
                 <div className="grid md:grid-cols-2 gap-3 text-xs">
-                  {managerData.team.roles.map((r:any,i:number)=>(
+                  {(managerData?.team?.roles ?? []).map((r:any,i:number)=>(
                     <div key={i} className="flex items-center gap-3 p-2 rounded bg-gray-800/40">
                       <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-blue-500 flex items-center justify-center text-white text-xs font-bold">
                         {r.role.split(' ').map((p:string)=>p[0]).join('').slice(0,2)}
@@ -287,7 +287,7 @@ export default function ProductionAlignmentPage(){
           <div className="rounded-xl bg-white/5 p-4 border border-white/10">
             <h3 className="font-medium mb-2">📊 Decision Impact Preview</h3>
             <ul className="text-xs space-y-1">
-              {managerData.decisionImpactTemplates.map((d:any,i:number)=>(<li key={i}>• {d.action}: {Object.entries(d.effect).map(([k,val]:any)=> `${k} ${val}`).join(', ')}</li>))}
+              {(managerData?.decisionImpactTemplates ?? []).map((d:any,i:number)=>(<li key={i}>• {d.action}: {Object.entries(d.effect).map(([k,val]:any)=> `${k} ${val}`).join(', ')}</li>))}
             </ul>
             {trend.length > 1 && (
               <div className="mt-4">
@@ -297,8 +297,8 @@ export default function ProductionAlignmentPage(){
                 </div>
                 <div className="flex gap-4 text-[10px] text-gray-400 mt-2">
                   <span>Samples: {trend.length}</span>
-                  <span>Last Util: {wsMetrics?.avgUtil?.toFixed(1)}%</span>
-                  <span>Last CO₂: {wsMetrics?.co2?.toFixed(1)}T</span>
+                  <span>Last Util: {toFixedStr(wsMetrics?.avgUtil,1)}%</span>
+                  <span>Last CO₂: {toFixedStr(wsMetrics?.co2,1)}T</span>
                   <span>Last Align: {Math.round((wsMetrics?.alignmentScore||0)*100)}%</span>
                 </div>
               </div>
@@ -306,11 +306,12 @@ export default function ProductionAlignmentPage(){
             <div className="mt-4">
               <h4 className="font-medium mb-2">🔥 Emissions vs Utilization Heatmap</h4>
               <div className="grid grid-cols-4 md:grid-cols-8 gap-2">
-                {managerData.sustainability.rakeEmissions.slice(0,32).map((r:any)=>{
-                  const util = r.utilization; // 0-100
-                  const em = r.emissions; // raw tons
+                {(managerData?.sustainability?.rakeEmissions ?? []).slice(0,32).map((r:any)=>{
+                  const util = Number(r.utilization) || 0; // 0-100
+                  const em = Number(r.emissions) || 0; // raw tons
                   const normUtil = Math.min(1, util/100);
-                  const normEm = Math.min(1, em / (managerData.sustainability.avgPerRake*2 || 1));
+                  const baseAvg = Number(managerData?.sustainability?.avgPerRake) || 1;
+                  const normEm = Math.min(1, em / (baseAvg*2));
                   const intensity = (normEm*0.6 + (1-normUtil)*0.4); // higher = worse
                   const bg = `hsl(${Math.round(120 - intensity*120)},70%,${40 + (1-intensity)*10}%)`;
                   return (
@@ -318,8 +319,8 @@ export default function ProductionAlignmentPage(){
                       {r.id.replace(/[^0-9]/g,'').slice(-2)}
                       <div className="absolute z-10 hidden group-hover:block bg-black/80 text-white p-2 rounded text-[10px] w-40 -top-2 left-1/2 -translate-x-1/2 -translate-y-full">
                         <div className="font-mono">{r.id}</div>
-                        <div>Util: {util.toFixed(1)}%</div>
-                        <div>CO₂: {em.toFixed(1)}T</div>
+                        <div>Util: {toFixedStr(util,1)}%</div>
+                        <div>CO₂: {toFixedStr(em,1)}T</div>
                         <div>Score: {Math.round((1-intensity)*100)}%</div>
                       </div>
                     </div>
@@ -330,11 +331,11 @@ export default function ProductionAlignmentPage(){
           </div>
 
           {/* Alerts */}
-          {managerData.alerts.length > 0 && (
+          {(managerData?.alerts?.length > 0) && (
             <div className="rounded-xl bg-white/5 p-4 border border-white/10">
               <h3 className="font-medium mb-2">🔔 Alignment Alerts</h3>
               <ul className="text-xs space-y-1">
-                {managerData.alerts.map((a:any,i:number)=>(<li key={i}>{a.severity==='risk'?'🚨':a.severity==='warning'?'⚠️':'ℹ️'} {a.message}</li>))}
+                {(managerData?.alerts ?? []).map((a:any,i:number)=>(<li key={i}>{a.severity==='risk'?'🚨':a.severity==='warning'?'⚠️':'ℹ️'} {a.message}</li>))}
               </ul>
             </div>
           )}
@@ -363,7 +364,7 @@ export default function ProductionAlignmentPage(){
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {data.plants.map((p:any)=> (
+              {(Array.isArray(data?.plants) ? data.plants : []).map((p:any)=> (
                 <tr key={p.plant} className="hover:bg-gray-50">
                   <Td>{p.plant}</Td>
                   <Td>{p.grade}</Td>
@@ -415,4 +416,20 @@ function TrendCanvas({ points }:{ points:any[] }) {
       <text x={120} y={12} fontSize={10} fill="#10B981">CO₂</text>
     </svg>
   );
+}
+
+// Safe numeric helpers to avoid calling toFixed on non-number values
+function toNumber(val: any, fallback = 0): number {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : fallback;
+  if (val == null) return fallback;
+  const n = parseFloat(String(val));
+  return Number.isFinite(n) ? n : fallback;
+}
+function toFixedStr(val: any, digits = 1): string {
+  const n = toNumber(val, 0);
+  try {
+    return n.toFixed(digits);
+  } catch {
+    return (0).toFixed(digits);
+  }
 }

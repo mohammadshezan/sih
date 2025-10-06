@@ -9,12 +9,15 @@ export default function CustomerSignup() {
   const [otpStage, setOtpStage] = useState(false);
   const [otp, setOtp] = useState("");
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<Record<string,string>>({});
+  const err = (k:string)=> errors?.[k];
 
   const onSubmit = async (e: any) => {
-    e.preventDefault(); setLoading(true);
+    e.preventDefault(); setLoading(true); setErrors({});
     try {
       const r = await fetch(withBase('/auth/customer/signup'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
       const j = await r.json();
+      if (r.status === 422) { setErrors(j.errors||{}); Toast.push({ text: 'Please fix highlighted fields.', tone: 'error' }); return; }
       if (!r.ok) throw new Error(j.error || 'Signup failed');
       setOtpStage(true);
       Toast.push({ text: 'OTP sent to email. Check inbox.', tone: 'success' });
@@ -23,10 +26,12 @@ export default function CustomerSignup() {
   };
 
   const onVerify = async () => {
-    setLoading(true);
+    setLoading(true); setErrors({});
     try {
       const r = await fetch(withBase('/auth/customer/verify-signup'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.email, otp }) });
       const j = await r.json();
+      if (r.status === 422) { setErrors(j.errors||{}); Toast.push({ text: 'Please check your OTP/email.', tone: 'error' }); return; }
+      if (r.status === 401 || r.status === 410) { setErrors({ otp: j.error || 'Invalid or expired OTP' }); Toast.push({ text: j.error||'Invalid or expired OTP', tone: 'error' }); return; }
       if (!r.ok) throw new Error(j.error || 'Verification failed');
       localStorage.setItem('token', j.token);
       Toast.push({ text: 'Account created', tone: 'success' });
@@ -43,7 +48,14 @@ export default function CustomerSignup() {
           {['name','company','email','phone','gstin','password'].map((k) => (
             <div key={k} className="grid gap-1">
               <label className="text-sm capitalize">{k}</label>
-              <input type={k==='password'?'password': k==='email'?'email':'text'} className="bg-black/30 border border-white/10 rounded px-3 py-2" value={(form as any)[k]} onChange={e=>setForm({...form, [k]: e.target.value})} required />
+              <input
+                type={k==='password'?'password': k==='email'?'email':'text'}
+                className={`bg-black/30 border rounded px-3 py-2 ${err(k)?'border-red-500':'border-white/10'}`}
+                value={(form as any)[k]}
+                onChange={e=>setForm({...form, [k]: e.target.value})}
+                required
+              />
+              {err(k) && <p className="text-xs text-red-400">{err(k)}</p>}
             </div>
           ))}
           <button disabled={loading} className="rounded bg-brand-green text-black px-4 py-2">{loading?'Please wait…':'Sign up'}</button>

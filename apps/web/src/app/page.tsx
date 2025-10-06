@@ -4,18 +4,31 @@ export default function LandingPage() {
   return (
     <main className="min-h-screen">
       {/* Hero */}
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-b from-steel-dark via-steel to-black opacity-60" />
-        <div className="relative mx-auto max-w-7xl px-6 pt-24 pb-16 text-center">
-          <h1 className="text-4xl md:text-6xl font-semibold tracking-tight">
-            QSTEEL – Smarter Steel Logistics, Powered by AI
-          </h1>
-          <p className="mt-4 text-lg text-gray-300">
-            From Plant to Customer — Faster, Smarter, Greener.
-          </p>
-          <div className="mt-8 flex justify-center gap-3 flex-wrap">
-            <Link href="/customer-auth" className="rounded-lg bg-brand-green px-6 py-3 font-medium text-black hover:opacity-90">Create Account</Link>
+      <section
+        className="relative overflow-hidden min-h-[85vh] bg-fixed bg-cover bg-center"
+        style={{ backgroundImage: 'url(/brand/rail.jpeg)' }}
+      >
+  {/* Single subtle overlay to keep text readable; removed extra gradient layer */}
+  <div className="absolute inset-0 bg-black/60" />
+
+        <div className="relative z-10 mx-auto max-w-7xl px-6 pt-28 pb-20 text-center">
+          {/* Glass panel for headline and CTA */}
+          <div className="mx-auto max-w-3xl rounded-2xl bg-black/30 backdrop-blur-sm ring-1 ring-white/10 p-6 md:p-8">
+            <h1
+              className="text-4xl md:text-6xl font-semibold tracking-tight"
+              style={{ textShadow: '0 6px 24px rgba(10, 10, 10, 0.91)' }}
+            >
+              QSTEEL – Smarter Steel Logistics, Powered by AI
+            </h1>
+            <p className="mt-4 text-lg text-gray-200">
+              From Plant to Customer — Faster, Smarter, Greener.
+            </p>
+            <div className="mt-8 flex justify-center gap-3 flex-wrap">
+              <Link href="/customer-auth" className="rounded-lg bg-brand-green px-6 py-3 font-medium text-black hover:opacity-90">Create Account</Link>
+            </div>
           </div>
+
+          {/* KPI cards */}
           <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6 text-left">
             <CardStat className="kpi-card" label="Total Active Rakes" value="18" />
             <CardStat className="kpi-card" label="Wagons in Operation" value="520" />

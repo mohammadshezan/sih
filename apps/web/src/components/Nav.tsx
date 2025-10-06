@@ -59,6 +59,8 @@ export default function Nav() {
               )}
               {role==='manager' && (
                 <>
+                  <Link href="/manager/dashboard">Dashboard</Link>
+                  <Link href="/manager/low-stock">Low Stock</Link>
                   <Link href="/manager/approvals">Approvals</Link>
                   <Link href="/map">Map</Link>
                   <Link href="/projects/tracker">Projects</Link>
@@ -72,6 +74,7 @@ export default function Nav() {
               {role==='yard' && (
                 <>
                   <Link href="/yard-actions">Yard</Link>
+                  <Link href="/yard/planned">Planned</Link>
                   <Link href="/map">Map</Link>
                   <Link href="/crew/controls">Crew</Link>
                   <Link href="/yard/wagon-health">Wagon Health</Link>
@@ -87,6 +90,13 @@ export default function Nav() {
                   <Link href="/admin/integrations">Integrations</Link>
                   <Link href="/admin/audit-reports">Audit</Link>
                   <Link href="/admin/analytics">Analytics</Link>
+                </>
+              )}
+              {role==='supervisor' && (
+                <>
+                  <Link href="/supervisor/dashboard">Dashboard</Link>
+                  <Link href="/stockyard">Stockyards</Link>
+                  <Link href="/supervisor/report-low-stock">Report Low Stock</Link>
                 </>
               )}
               {role==='cmo' && (

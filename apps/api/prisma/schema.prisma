@@ -3,20 +3,26 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  role      Role
-  createdAt DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  passwordHash String?  // optional to avoid destructive change on existing rows
+  role         Role
+  name         String?
+  createdAt    DateTime @default(now())
 }
 
 enum Role {
   admin
   manager
+  supervisor
+  customer
+  rake_planner
   yard
 }
 
@@ -242,4 +248,44 @@ model Event {
 
   @@index([ts])
   @@index([role, ts])
+}
+
+// ------------------------------
+// OTP storage (for reliable verification)
+// ------------------------------
+model OtpCode {
+  id       Int      @id @default(autoincrement())
+  email    String
+  purpose  String   @default("generic")
+  code     String
+  expAt    DateTime
+
+  @@unique([email, purpose], name: "email_purpose")
+}
+
+// Low stock reports from supervisors for manager actioning
+model LowStockReport {
+  id            Int       @id @default(autoincrement())
+  stockyardCity String
+  product       String
+  currentTons   Int?
+  thresholdTons Int?
+  requiredTons  Int?
+  reporter      String
+  createdAt     DateTime  @default(now())
+  status        LowStockReportStatus @default(OPEN)
+  ackBy         String?
+  ackAt         DateTime?
+  clearedBy     String?
+  clearedAt     DateTime?
+
+  @@index([stockyardCity])
+  @@index([product])
+  @@index([stockyardCity, product])
+}
+
+enum LowStockReportStatus {
+  OPEN
+  ACKNOWLEDGED
+  CLEARED
 }

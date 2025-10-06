@@ -1,3 +1,9 @@
+// Load root-level .env for monorepo single-env setup
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env.local'), override: true });
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,

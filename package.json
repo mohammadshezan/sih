@@ -7,11 +7,19 @@
     "services/*"
   ],
   "scripts": {
-    "dev": "npm run -w apps/web dev",
-    "dev:all": "npm run -w apps/api dev & npm run -w apps/web dev",
+  "dev": "concurrently \"npm run -w apps/api dev\" \"npm run -w apps/web dev\"",
+    "dev-safe": "node scripts/dev-start.js",
+    "dev-win": "powershell -ExecutionPolicy Bypass -File scripts/start-dev.ps1",
+    "dev:all": "taskkill /IM node.exe /F >nul 2>&1 || echo. && npm run -w apps/api dev & npm run -w apps/web dev",
     "build": "npm run -w apps/web build && npm run -w apps/api build",
     "start": "npm run -w apps/api start",
     "start:all": "npm run -w apps/api start & npm run -w apps/web start",
-    "postinstall": "npm -w apps/web run postinstall || true"
+    "postinstall": "npm -w apps/web run postinstall || true",
+    "clean-ports": "node scripts/port-manager.js cleanup",
+    "check-ports": "node scripts/port-manager.js check",
+    "kill-nodes": "taskkill /IM node.exe /F || echo 'No Node.js processes found'"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
   }
 }

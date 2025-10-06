@@ -1,8 +1,12 @@
 // Load environment variables from .env and .env.local (local overrides)
 import dotenv from 'dotenv';
 import path from 'path';
+// Load app-local envs first, then allow root-level .env to override for monorepo single-env setup
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local'), override: true });
+// Root .env (../../.env) will override duplicates so you can manage all envs in one place
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env.local'), override: true });
 import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -164,25 +168,59 @@ async function initRedis() {
 initRedis();
 
 // In-memory fallback store for OTPs if Redis is unavailable
-const OTP_STORE = new Map(); // key: email, value: { code, expMs }
-function otpSet(email, code, ttlSec = 300) {
+const OTP_STORE = new Map(); // key: normalized email, value: { code, expMs }
+const normEmailKey = (e)=> String(e||'').trim().toLowerCase();
+async function otpSet(email, code, ttlSec = 300) {
+  const key = normEmailKey(email);
   const expMs = Date.now() + ttlSec * 1000;
-  if (redis) {
-    return redis.set(`otp:${email}`, JSON.stringify({ code, expMs }), 'EX', ttlSec).catch(()=>{});
+  // Prefer DB persistence if available
+  if (prisma) {
+    try {
+      const expAt = new Date(expMs);
+      await prisma.otpCode.upsert({
+        where: { email_purpose: { email: key, purpose: 'generic' } },
+        update: { code, expAt },
+        create: { email: key, purpose: 'generic', code, expAt },
+      });
+      return;
+    } catch { /* fall through to redis/memory */ }
   }
-  OTP_STORE.set(email, { code, expMs });
+  if (redis) {
+    try { await redis.set(`otp:${key}`, JSON.stringify({ code, expMs }), 'EX', ttlSec); return; } catch { /* fall through */ }
+  }
+  OTP_STORE.set(key, { code, expMs });
 }
 async function otpGet(email) {
-  if (redis) {
-    try { const v = await redis.get(`otp:${email}`); return v ? JSON.parse(v) : null; } catch { return null; }
+  const key = normEmailKey(email);
+  if (prisma) {
+    try {
+      const row = await prisma.otpCode.findUnique({ where: { email_purpose: { email: key, purpose: 'generic' } } });
+      if (!row) {
+        // Fallback to Redis/memory if DB has no record (e.g., set before DB connected)
+        if (redis) { try { const v = await redis.get(`otp:${key}`); return v ? JSON.parse(v) : null; } catch { /*noop*/ } }
+        const v = OTP_STORE.get(key);
+        if (!v) return null; if (Date.now() > v.expMs) { OTP_STORE.delete(key); return null; }
+        return v;
+      }
+      const expMs = new Date(row.expAt).getTime();
+      if (Date.now() > expMs) { try { await prisma.otpCode.delete({ where: { email_purpose: { email: key, purpose: 'generic' } } }); } catch {}; return null; }
+      return { code: row.code, expMs };
+    } catch { /* fall through to redis/memory */ }
   }
-  const v = OTP_STORE.get(email);
-  if (!v) return null; if (Date.now() > v.expMs) { OTP_STORE.delete(email); return null; }
+  if (redis) {
+    try { const v = await redis.get(`otp:${key}`); return v ? JSON.parse(v) : null; } catch { return null; }
+  }
+  const v = OTP_STORE.get(key);
+  if (!v) return null; if (Date.now() > v.expMs) { OTP_STORE.delete(key); return null; }
   return v;
 }
 function otpDel(email) {
-  if (redis) { return redis.del(`otp:${email}`).catch(()=>{}); }
-  OTP_STORE.delete(email);
+  const key = normEmailKey(email);
+  const ops = [];
+  if (prisma) ops.push(prisma.otpCode.delete({ where: { email_purpose: { email: key, purpose: 'generic' } } }).catch(()=>{}));
+  if (redis) ops.push(redis.del(`otp:${key}`).catch(()=>{}));
+  OTP_STORE.delete(key);
+  return Promise.all(ops).catch(()=>{});
 }
 
 // Attach a correlation/request ID for every request
@@ -214,6 +252,9 @@ app.use((req, res, next) => {
 // ==== CMO Mock Stores (in-memory) ====
 const ALLOCATIONS = new Map(); // id -> { id, status, payload, createdBy, createdAt, approvedBy?, approvedAt? }
 const ALLOC_AUDIT = []; // { allocId, user, action, diff, ts }
+// ==== Low stock reports and manager-issued internal orders (in-memory fallbacks) ====
+const LOW_STOCK_REPORTS = []; // { id, stockyardCity, product, currentTons?, thresholdTons?, requiredTons?, reporter, ts }
+const PENDING_INTERNAL_ORDERS = []; // { id, destination, product, quantityTons, priority, sourcePlant, status, ts }
 
 // ==== Customer Projects (static demo dataset) ====
 // Minimal project sites to mark on the map and list in UIs. In production this would come from DB/ERP.
@@ -504,17 +545,18 @@ const users = [
   { id: 1, email: 'admin@sail.test', role: 'admin' },
   { id: 2, email: 'manager@sail.test', role: 'manager' },
   { id: 3, email: 'yard@sail.test', role: 'yard' },
-  { id: 4, email: 'cmo@sail.test', role: 'cmo' },
+  { id: 4, email: 'supervisor@sail.test', role: 'supervisor' },
   // Crew user for simulation controls
   { id: 5, email: 'crew@sail.test', role: 'crew' },
 ];
 // OTP recipient overrides (send OTP to these real inboxes for given usernames)
 const OTP_RECIPIENT_MAP = {
-  'admin@sail.test': 'head.qsteel@gmail.com',
-  'manager@sail.test': 'mohammadshezanekram@gmail.com',
-  'yard@sail.test': 'khalifa182005@gmail.com',
-  'cmo@sail.test': 'head.qsteel@gmail.com',
-  'crew@sail.test': 'head.qsteel@gmail.com'
+  'admin@sail.test': 'sanu826010@gmail.com',
+  'manager@sail.test': 'sanu826010@gmail.com',
+  'yard@sail.test': 'sanu826010@gmail.com',
+  'supervisor@sail.test': 'sanu826010@gmail.com',
+  'cmo@sail.test': 'sanu826010@gmail.com',
+  'crew@sail.test': 'sanu826010@gmail.com'
 };
 // Allow customer email pattern for demo
 function resolveUserByEmail(email) {
@@ -541,7 +583,15 @@ function appendLedger(entry, tsOverride) {
 }
 
 // Helper: demo alias email normalization and validation
-const DEMO_ALIAS_MAP = { };
+const DEMO_ALIAS_MAP = {
+  // Common typos: map .text -> .test for demo users
+  'admin@sail.text': 'admin@sail.test',
+  'manager@sail.text': 'manager@sail.test',
+  'yard@sail.text': 'yard@sail.test',
+  'supervisor@sail.text': 'supervisor@sail.test',
+  'cmo@sail.text': 'cmo@sail.test',
+  'crew@sail.text': 'crew@sail.test',
+};
 function normalizeDemoEmail(rawEmail) {
   const e = String(rawEmail || '').trim().toLowerCase();
   return DEMO_ALIAS_MAP[e] || e;
@@ -553,9 +603,9 @@ function isValidEmail(email) {
 // Request OTP via email
 app.post('/auth/request-otp', async (req, res) => {
   // Accept aliases like "manager.sail@test" then normalize to a canonical email
-  const schema = z.object({ email: z.string().min(3) });
+  const schema = z.object({ email: z.string().trim().min(3, 'Enter a valid email') });
   const parsed = schema.safeParse(req.body || {});
-  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+  if (!parsed.success) return res.status(422).json({ error: 'validation_error', errors: zodFieldErrors(parsed.error) });
   const rawEmail = parsed.data.email;
   const email = normalizeDemoEmail(rawEmail);
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
@@ -579,7 +629,8 @@ app.post('/auth/request-otp', async (req, res) => {
       if (!SMTP_PASS) missing.push('SMTP_PASS');
       console.log(`[QSTEEL][AUTH] OTP(for dev) email=${email} code=${code} exp=5m (email disabled, missing: ${missing.join(',') || 'DISABLE_EMAIL flag or unknown'})`);
     }
-    return res.json({ ok: true, message: 'OTP generated. Email delivery disabled by config.' });
+    const hint = /@sail\.test$/i.test(email) ? ' For demo users, you can also try OTP 123456.' : '';
+    return res.json({ ok: true, message: 'OTP generated. Email delivery disabled by config.' + hint });
   }
   try {
     const transporter = nodemailer.createTransport({
@@ -609,6 +660,9 @@ app.post('/auth/request-otp', async (req, res) => {
     });
     if (process.env.OTP_DEBUG === '1') {
       console.log('[OTP] dispatched', { entered: rawEmail, normalized: email, to: toEmail, codeMasked: code.replace(/^(\d{4})/, '****'), messageId: info?.messageId, accepted: info?.accepted, rejected: info?.rejected });
+    }
+    if (process.env.OTP_DEV_LOG === '1' && /@sail\.test$/i.test(email)) {
+      console.log(`[OTP][DEV] email=${email} code=${code} exp=5m`);
     }
     res.json({ ok: true, messageId: info.messageId, to: toEmail });
   } catch (e) {
@@ -680,11 +734,15 @@ app.post('/auth/login', async (req, res) => {
   const email = normalizeDemoEmail(rawEmail);
   const { otp } = parsed.data;
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
-  // Prefer server-stored OTP when available; keep 123456 as a universal dev override
+  // Prefer server-stored OTP when available; allow 123456 as dev override for demo users
   let valid = false;
   const stored = await otpGet(email);
   if (stored && stored.code === otp && Date.now() <= stored.expMs) {
     valid = true; await otpDel(email);
+  }
+  // Dev override: only for *.sail.test demo users
+  if (!valid && /@sail\.test$/i.test(email) && otp === '123456') {
+    valid = true;
   }
   if (!valid) return res.status(401).json({ error: 'Invalid OTP, please try again.' });
   const user = resolveUserByEmail(email);
@@ -1437,6 +1495,87 @@ app.get('/stock', auth(), async (req, res) => {
   }
 });
 
+// --- Stockyard inventory endpoints (products per yard) ---
+const STOCKYARD_NAMES = ['Bhilai','Rourkela','Patna','Durgapur','Delhi','Indore','Chennai','Mumbai','Visakhapatnam','Kolkata'];
+const STOCK_PRODUCTS = ['TMT Bars','Hot Rolled','Galvanised Sheet','Coils','Billets'];
+const slugify = (s)=> String(s||'').toLowerCase().replace(/\s+/g,'-');
+function seededQty(name, product) {
+  const str = `${name}:${product}`; let h = 0; for (let i=0;i<str.length;i++) { h = ((h<<5)-h) + str.charCodeAt(i); h|=0; }
+  const base = Math.abs(h % 500); return 200 + base; // 200..699 tons
+}
+
+// List all stockyards with product inventory
+app.get('/stock/yard', authAny(['supervisor']), async (_req, res) => {
+  const list = STOCKYARD_NAMES.map(n => ({
+    slug: slugify(n),
+    name: n,
+    products: STOCK_PRODUCTS.reduce((acc, p) => { acc[p] = seededQty(n, p); return acc; }, {})
+  }));
+  res.json({ yards: list });
+});
+
+// Get one stockyard by slug
+app.get('/stock/yard/:slug', authAny(['supervisor']), async (req, res) => {
+  const slug = String(req.params.slug||'');
+  const name = STOCKYARD_NAMES.find(n => slugify(n) === slug);
+  if (!name) return res.status(404).json({ error: 'Stockyard not found' });
+  const products = STOCK_PRODUCTS.reduce((acc, p) => { acc[p] = seededQty(name, p); return acc; }, {});
+  res.json({ slug, name, products });
+});
+
+// Incoming rakes for a yard (filter if name provided)
+app.get('/yard/incoming', authAny(['yard','supervisor','manager','admin']), async (req, res) => {
+  const yardName = String(req.query.yard || '').trim();
+  if (prisma) {
+    try {
+      // Pending rakes, optionally filter by yard name
+      const where = { status: 'PENDING', ...(yardName ? { yard: { name: { equals: yardName, mode: 'insensitive' } } } : {}) };
+      const rakes = await prisma.rake.findMany({ where, include: { yard: true }, take: 20 });
+      return res.json(rakes.map(r=> ({ code: r.code, status: r.status, yard: r.yard?.name || null })));
+    } catch (e) { /* fallthrough */ }
+  }
+  // Fallback: subset of MOCK list
+  const all = [
+    { code: 'rake-101', yard: 'Bhilai', status: 'PENDING' },
+    { code: 'rake-202', yard: 'Rourkela', status: 'PENDING' },
+    { code: 'rake-303', yard: 'Durgapur', status: 'PENDING' },
+  ];
+  const arr = yardName ? all.filter(a => a.yard.toLowerCase() === yardName.toLowerCase()) : all;
+  res.json(arr);
+});
+
+// Pending dispatches for a yard (simple heuristic on orders)
+app.get('/yard/dispatches', authAny(['yard','supervisor','manager','admin']), async (req, res) => {
+  const yardName = String(req.query.yard || '').trim();
+  if (prisma) {
+    try {
+      // Use orders with PENDING/APPROVED as pending dispatches; optionally filter by destination matching yard city
+      const orders = await prisma.order.findMany({
+        where: { status: { in: ['PENDING','APPROVED'] }, ...(yardName ? { destination: { contains: yardName, mode: 'insensitive' } } : {}) },
+        take: 20,
+        orderBy: { createdAt: 'desc' },
+        include: { customer: { select: { name: true } } }
+      });
+      return res.json(orders.map(o => ({ id: o.orderId, customer: o.customer?.name || '', cargo: `${o.cargo} (${o.quantityTons}t)` })));
+    } catch (e) { /* fallthrough */ }
+  }
+  // Fallback: mock few lines
+  const items = [
+    { id: 'P1', customer: 'ABC Steel', cargo: 'TMT Bars (240t)' },
+    { id: 'P2', customer: 'XYZ Infra', cargo: 'Coils (180t)' },
+    { id: 'P3', customer: 'Metro JV', cargo: 'Galvanised Sheet (120t)' },
+  ];
+  try {
+    // Show manager-issued internal orders as pending dispatches too
+    const internal = PENDING_INTERNAL_ORDERS
+      .filter(o => !yardName || (o.destination||'').toLowerCase().includes(yardName.toLowerCase()))
+      .slice(-10)
+      .map(o => ({ id: o.id, customer: 'Internal', cargo: `${o.product} (${o.quantityTons}t)` }));
+    items.unshift(...internal);
+  } catch {}
+  res.json(items);
+});
+
 // List routes (for dynamic selector)
 app.get('/routes', auth(), async (req, res) => {
   const plant = String(req.query.plant || '').trim();
@@ -1449,6 +1588,322 @@ app.get('/routes', auth(), async (req, res) => {
   }
   // fallback
   res.json(MOCK_DATA.routes.map(r => ({ key: r.routeKey, name: r.name, plant: 'Bokaro' })));
+});
+
+// =========================
+// Supervisor → Manager: Low Stock Report + Manager Order to Yard
+// =========================
+// Supervisors create a low stock alert with product and stockyard city
+app.post('/stock/low-stock/report', authAny(['supervisor','admin']), async (req, res) => {
+  try {
+    const schema = z.object({
+      stockyardCity: z.string().min(2),
+      product: z.string().min(2),
+      currentTons: z.number().nonnegative().optional(),
+      thresholdTons: z.number().nonnegative().optional(),
+      requiredTons: z.number().positive().optional(),
+    });
+    const parsed = schema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+    const payload = parsed.data;
+    const item = {
+      id: 'LS-' + Math.random().toString(36).slice(2,8).toUpperCase(),
+      stockyardCity: payload.stockyardCity,
+      product: payload.product,
+      currentTons: payload.currentTons ?? null,
+      thresholdTons: payload.thresholdTons ?? null,
+      requiredTons: payload.requiredTons ?? null,
+      reporter: req.user?.email || 'unknown',
+      ts: new Date().toISOString(),
+    };
+    // Persist to DB when available
+    if (prisma) {
+      try {
+        await prisma.lowStockReport.create({ data: {
+          stockyardCity: item.stockyardCity,
+          product: item.product,
+          currentTons: item.currentTons != null ? Math.round(item.currentTons) : null,
+          thresholdTons: item.thresholdTons != null ? Math.round(item.thresholdTons) : null,
+          requiredTons: item.requiredTons != null ? Math.round(item.requiredTons) : null,
+          reporter: item.reporter,
+        } });
+      } catch (e) { console.warn('[low-stock/report] DB persist failed:', e?.message || e); }
+    } else {
+      LOW_STOCK_REPORTS.push(item);
+    }
+    // Optional: broadcast alert
+    try { io.emit('alert', { type: 'low_stock', message: `${item.product} low at ${item.stockyardCity}`, level: 'warning', ts: Date.now(), meta: item }); } catch {}
+    res.json({ ok: true, report: item });
+  } catch (e) {
+    res.status(500).json({ error: 'report_failed', detail: e?.message || String(e) });
+  }
+});
+
+// Managers fetch low stock reports (latest first)
+app.get('/stock/low-stock/reports', authAny(['manager','admin']), async (_req, res) => {
+  try {
+    if (prisma) {
+      try {
+        const rows = await prisma.lowStockReport.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+        return res.json({ reports: rows.map(r => ({
+          id: r.id,
+          stockyardCity: r.stockyardCity,
+          product: r.product,
+          currentTons: r.currentTons,
+          thresholdTons: r.thresholdTons,
+          requiredTons: r.requiredTons,
+          reporter: r.reporter,
+          status: r.status,
+          ackBy: r.ackBy,
+          ackAt: r.ackAt ? (r.ackAt instanceof Date ? r.ackAt.toISOString() : String(r.ackAt)) : null,
+          clearedBy: r.clearedBy,
+          clearedAt: r.clearedAt ? (r.clearedAt instanceof Date ? r.clearedAt.toISOString() : String(r.clearedAt)) : null,
+          ts: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt)
+        })) });
+      } catch (e) { console.warn('[low-stock/reports] DB fetch failed:', e?.message || e); }
+    }
+    const list = LOW_STOCK_REPORTS.slice().reverse().slice(0, 100);
+    res.json({ reports: list });
+  } catch (e) {
+    res.status(500).json({ error: 'list_failed', detail: e?.message || String(e) });
+  }
+});
+
+// Acknowledge a low stock report
+app.post('/stock/low-stock/:id/ack', authAny(['manager','admin']), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+  if (!prisma) return res.status(503).json({ error: 'DB required for ack' });
+  try {
+    const row = await prisma.lowStockReport.update({ where: { id }, data: { status: 'ACKNOWLEDGED', ackBy: req.user?.email || 'manager', ackAt: new Date() } });
+    try { io.emit('alert', { type: 'low_stock_ack', level: 'info', ts: Date.now(), message: `Low stock acknowledged for ${row.product} @ ${row.stockyardCity}` }); } catch {}
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(404).json({ error: 'not_found' });
+  }
+});
+
+// Clear a low stock report
+app.post('/stock/low-stock/:id/clear', authAny(['manager','admin']), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' });
+  if (!prisma) return res.status(503).json({ error: 'DB required for clear' });
+  try {
+    const row = await prisma.lowStockReport.update({ where: { id }, data: { status: 'CLEARED', clearedBy: req.user?.email || 'manager', clearedAt: new Date() } });
+    try { io.emit('alert', { type: 'low_stock_cleared', level: 'info', ts: Date.now(), message: `Low stock cleared for ${row.product} @ ${row.stockyardCity}` }); } catch {}
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(404).json({ error: 'not_found' });
+  }
+});
+
+// Manager issues an internal order for a rake plan from Bokaro Steel Plant to the given stockyard
+app.post('/manager/orders/issue', authAny(['manager','admin']), async (req, res) => {
+  try {
+    const schema = z.object({
+      stockyardCity: z.string().min(2),
+      product: z.string().min(2),
+      quantityTons: z.number().positive(),
+      priority: z.enum(['Normal','Urgent']).default('Urgent').optional(),
+      sourcePlant: z.string().default('Bokaro Steel Plant').optional(),
+    });
+    const parsed = schema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+    const { stockyardCity, product, quantityTons, priority = 'Urgent', sourcePlant = 'Bokaro Steel Plant' } = parsed.data;
+
+    // Try to persist as a customer order-like record when DB is available
+    let saved = null;
+    if (prisma) {
+      try {
+        saved = await prisma.order.create({
+          data: {
+            customer: { create: { name: 'Internal', company: 'QSTEEL', email: `internal-${Date.now()}@qsteel.local`, phone: '0000000000', passwordHash: '!' } },
+            cargo: product,
+            quantityTons: Math.round(quantityTons),
+            sourcePlant: sourcePlant,
+            destination: stockyardCity,
+            priority: priority,
+            status: 'APPROVED',
+            estimateCost: Math.round(quantityTons * 1200),
+          }
+        });
+      } catch (e) {
+        console.warn('[manager/orders/issue] DB create failed, falling back:', e?.message || e);
+      }
+    }
+    if (!saved) {
+      const tmp = {
+        id: 'INT-' + Math.random().toString(36).slice(2,8).toUpperCase(),
+        destination: stockyardCity,
+        product,
+        quantityTons: Math.round(quantityTons),
+        priority,
+        sourcePlant,
+        status: 'APPROVED',
+        ts: new Date().toISOString(),
+      };
+      PENDING_INTERNAL_ORDERS.push(tmp);
+      saved = tmp;
+    }
+
+    // Build a simple rake plan (wagons, ETA, cost, emissions)
+    const originCity = /Bokaro/i.test(sourcePlant) ? 'Bokaro' : (sourcePlant.split(' ')[0] || 'Bokaro');
+    const distanceKm = getDistance(originCity, stockyardCity.split(',')[0]);
+    const capacityPerWagon = 60;
+    const wagonsUsed = Math.ceil(quantityTons / capacityPerWagon);
+    const loadedQty = Math.min(quantityTons, wagonsUsed * capacityPerWagon);
+    const utilization = loadedQty / (wagonsUsed * capacityPerWagon);
+    const locoType = 'diesel';
+    const baseSpeedKph = 50; const dwellHours = 3 + (wagonsUsed * 0.15);
+    const runHours = distanceKm / baseSpeedKph;
+    const transitHours = Number((runHours + dwellHours).toFixed(1));
+    const departAt = new Date();
+    const eta = new Date(departAt.getTime() + transitHours * 3600 * 1000);
+    const cost = {
+      transport: Math.round(distanceKm * wagonsUsed * 22),
+      energy: Math.round(distanceKm * wagonsUsed * (locoType==='electric'? 8: 14)),
+      handling: Math.round(wagonsUsed * 500)
+    };
+    const totalCost = cost.transport + cost.energy + cost.handling;
+    const emissionsTons = Number(calculateEmissions(distanceKm, wagonsUsed * capacityPerWagon, locoType).toFixed(2));
+    const plan = {
+      origin: originCity,
+      destination: stockyardCity,
+      distanceKm,
+      wagonsUsed,
+      capacityPerWagon,
+      utilizationPct: Number((utilization*100).toFixed(1)),
+      departAt: departAt.toISOString(),
+      eta: eta.toISOString(),
+      transitHours,
+      locoType,
+      cost: { ...cost, total: totalCost },
+      emissionsTons
+    };
+
+    // Create Rake + Wagons in DB if available
+    let createdRake = null;
+    if (prisma) {
+      try {
+        const rakeCode = `RK-${Date.now().toString().slice(-6)}`;
+        createdRake = await prisma.rake.create({
+          data: {
+            code: rakeCode,
+            status: 'PENDING',
+            wagons: {
+              create: Array.from({ length: wagonsUsed }).map((_, i) => ({ code: `W${rakeCode}-${(i+1).toString().padStart(3,'0')}`, type: 'general', capT: 60 }))
+            }
+          },
+          include: { wagons: true }
+        });
+      } catch (e) { console.warn('[manager/orders/issue] Rake create failed:', e?.message || e); }
+    }
+
+    // Emit event and return
+    try { io.emit('alert', { type: 'manager_order', level: 'info', ts: Date.now(), message: `Order issued: ${product} ${quantityTons}t to ${stockyardCity}`, meta: { order: saved, plan, rake: createdRake } }); } catch {}
+    try { io.emit('alert', { type: 'rake_plan', level: 'info', ts: Date.now(), message: `Rake plan ready for ${stockyardCity}`, meta: { order: saved, plan, rake: createdRake } }); } catch {}
+    res.json({ ok: true, order: saved, plan, rake: createdRake });
+  } catch (e) {
+    res.status(500).json({ error: 'issue_failed', detail: e?.message || String(e) });
+  }
+});
+
+// Yard: list planned rakes created by manager (DB only)
+app.get('/yard/planned-rakes', authAny(['yard','manager','admin']), async (req, res) => {
+  if (!prisma) return res.json([]);
+  try {
+    const list = await prisma.rake.findMany({ where: { status: 'PENDING' }, orderBy: { id: 'desc' }, take: 20, include: { wagons: true, yard: true } });
+    res.json(list.map(r => ({ code: r.code, wagons: (r.wagons||[]).length, yard: r.yard?.name || null, status: r.status })));
+  } catch (e) {
+    res.status(500).json({ error: 'failed_list', detail: e?.message || String(e) });
+  }
+});
+
+// =========================
+// Manager Overview (Bokaro Steel Plant)
+// =========================
+// Returns: current production, raw materials inventory, finished inventory ready for dispatch,
+// outgoing rakes, and pending customer orders.
+app.get('/plant/manager/overview', auth('manager'), async (req, res) => {
+  try {
+    const plant = 'Bokaro Steel Plant';
+    // Derive some deterministic demo numbers
+    const now = new Date();
+    const seed = (s) => {
+      let h = 0; for (let i=0;i<s.length;i++) h = ((h<<5)-h)+s.charCodeAt(i);
+      return Math.abs(h);
+    };
+    const finishedProducts = ['TMT Bars','Billets','Coils','Hot Rolled','Galvanised Sheet'];
+    const rawMaterials = ['Coal','Iron Ore','Limestone'];
+    const capacity = (name) => 1000 + (seed(name)%1000); // 1000..1999
+    const threshold = (name) => 300 + (seed(name)%200); // 300..499
+    const qtyFor = (name) => 200 + (seed(name+now.toDateString())%700); // 200..899
+
+    const production = finishedProducts.map((p, idx) => {
+      const rateTph = 40 + (seed(p+':rate') % 50); // 40..89 tph
+      const shiftHours = 8;
+      const shiftTotalTons = rateTph * shiftHours;
+      const todayTons = shiftTotalTons + (seed(p+':today') % 200);
+      return { product: p, rateTph, shiftTotalTons, todayTons };
+    });
+
+    const rawInv = rawMaterials.map((r) => {
+      const cap = capacity('raw:'+r);
+      const qty = qtyFor('raw:'+r);
+      const thr = threshold('raw:'+r);
+      return { name: r, stockTons: qty, capacityTons: cap, thresholdTons: thr, low: qty < thr };
+    });
+
+    const finishedInv = finishedProducts.map((p) => {
+      const cap = capacity('fp:'+p);
+      const qty = qtyFor('fp:'+p);
+      const thr = threshold('fp:'+p);
+      return { product: p, readyTons: qty, capacityTons: cap, thresholdTons: thr, low: qty < thr };
+    });
+
+    // Outgoing rakes (recent DISPATCHED)
+    let outgoing = [];
+    if (prisma) {
+      try {
+        const list = await prisma.rake.findMany({
+          where: { status: 'DISPATCHED' },
+          orderBy: { updatedAt: 'desc' },
+          take: 10,
+        });
+        outgoing = list.map(r => ({ code: r.code, destination: r.destination || '', product: r.product || '', tons: r.tons || null, departedAt: r.updatedAt }));
+      } catch (e) { /* fallback below */ }
+    }
+    if (!outgoing.length) {
+      const src = Array.isArray(MOCK_DATA.rakes) ? MOCK_DATA.rakes : [];
+      outgoing = src.filter(r => (r.status||'').toLowerCase()==='dispatched').slice(0,10)
+        .map(r => ({ code: r.code || r.id || 'RK', destination: r.destination || r.to || 'DGR', product: r.product || 'Mixed', tons: r.tons || r.load || 600, departedAt: r.dispatchedAt || r.updatedAt || new Date().toISOString() }));
+    }
+
+    // Pending/approved customer orders
+    let pendingOrders = [];
+    if (prisma) {
+      try {
+        const orders = await prisma.order.findMany({
+          where: { status: { in: ['PENDING','APPROVED'] } },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+          include: { customer: { select: { name: true } } }
+        });
+        pendingOrders = orders.map(o => ({ id: o.orderId, customer: o.customer?.name || '', product: o.cargo, quantityTons: o.quantityTons, destination: o.destination, priority: o.priority || 'MEDIUM', status: o.status }));
+      } catch (e) { /* fallback below */ }
+    }
+    if (!pendingOrders.length) {
+      pendingOrders = [
+        { id: 'ORD-101', customer: 'ABC Steel', product: 'TMT Bars', quantityTons: 420, destination: 'Durgapur', priority: 'HIGH', status: 'PENDING' },
+        { id: 'ORD-102', customer: 'XYZ Infra', product: 'Coils', quantityTons: 280, destination: 'Rourkela', priority: 'MEDIUM', status: 'APPROVED' },
+        { id: 'ORD-103', customer: 'Metro JV', product: 'Galvanised Sheet', quantityTons: 300, destination: 'Patna', priority: 'HIGH', status: 'PENDING' },
+      ];
+    }
+
+    res.json({ plant, production, rawInventory: rawInv, finishedInventory: finishedInv, outgoingRakes: outgoing, pendingOrders });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to load manager overview', detail: e?.message || String(e) });
+  }
 });
 
 // Health endpoint (admin)
@@ -2593,20 +3048,54 @@ io.on('connection', (socket) => {
 // In-memory stores (fallback when DB not integrated)
 const CUSTOMERS = new Map(); // key: customerId -> profile
 const CUSTOMERS_BY_EMAIL = new Map(); // key: email -> profile
-const SIGNUP_PENDING = new Map(); // key: email -> { data, createdAt }
+const SIGNUP_PENDING = new Map(); // in-memory fallback
+async function signupPendingSet(email, data, ttlSec = 15*60) {
+  const key = `signup:${normEmailKey(email)}`;
+  const payload = JSON.stringify({ data, createdAt: Date.now() });
+  if (redis) { try { await redis.set(key, payload, 'EX', ttlSec); return; } catch {}
+  }
+  SIGNUP_PENDING.set(normEmailKey(email), { data, createdAt: Date.now() });
+}
+async function signupPendingGet(email) {
+  const key = `signup:${normEmailKey(email)}`;
+  if (redis) {
+    try { const v = await redis.get(key); if (v) return JSON.parse(v); } catch {}
+  }
+  return SIGNUP_PENDING.get(normEmailKey(email)) || null;
+}
+async function signupPendingDel(email) {
+  const k = normEmailKey(email);
+  if (redis) { try { await redis.del(`signup:${k}`); } catch {}
+  }
+  SIGNUP_PENDING.delete(k);
+}
 const ORDERS = new Map(); // key: orderId -> order
 const ORDERS_BY_CUSTOMER = new Map(); // key: customerId -> orderIds[]
 const INVOICES = new Map(); // key: orderId -> { pdfGeneratedAt, amount }
 
 const scryptAsync = promisify(crypto.scrypt);
 
+// Map Zod errors to a field->message object for client-friendly display
+function zodFieldErrors(zerr) {
+  try {
+    const out = {};
+    for (const issue of zerr?.errors || zerr?.issues || []) {
+      const key = (Array.isArray(issue.path) && issue.path.length ? String(issue.path[0]) : 'form');
+      if (!out[key]) out[key] = issue.message || 'Invalid value';
+    }
+    return out;
+  } catch {
+    return { form: 'Invalid input' };
+  }
+}
+
 const CustomerSignupSchema = z.object({
-  name: z.string().min(2),
-  company: z.string().min(2),
-  email: z.string().email(),
-  phone: z.string().min(7),
-  gstin: z.string().min(5).optional(),
-  password: z.string().min(8)
+  name: z.string().trim().min(2, 'Name must be at least 2 characters'),
+  company: z.string().trim().min(2, 'Company must be at least 2 characters'),
+  email: z.string().trim().email('Enter a valid email address'),
+  phone: z.coerce.string().trim().min(7, 'Phone must be at least 7 digits'),
+  gstin: z.union([z.string().trim().min(5, 'GSTIN must be at least 5 characters'), z.literal('')]).optional(),
+  password: z.string().min(8, 'Password must be at least 8 characters')
 });
 
 // Helper: hash & verify password
@@ -2623,6 +3112,73 @@ async function verifyPassword(pw, stored) {
   return crypto.timingSafeEqual(Buffer.from(keyHex, 'hex'), Buffer.from(key));
 }
 
+// ------------ Prisma helpers (DB <-> API mappings) ------------
+function toDbPriority(p) {
+  // API uses 'Normal'|'Urgent' while DB uses enum Priority Normal|Urgent
+  return p === 'Urgent' ? 'Urgent' : 'Normal';
+}
+function toApiPriority(p) {
+  return p === 'Urgent' ? 'Urgent' : 'Normal';
+}
+function toDbStatus(apiStatus) {
+  const m = {
+    'Pending': 'PENDING',
+    'Approved': 'APPROVED',
+    'Loading': 'LOADING',
+    'En Route': 'EN_ROUTE',
+    'Delivered': 'DELIVERED',
+    'Rejected': 'REJECTED',
+  };
+  return m[apiStatus] || 'PENDING';
+}
+function toApiStatus(dbStatus) {
+  const m = {
+    PENDING: 'Pending',
+    APPROVED: 'Approved',
+    LOADING: 'Loading',
+    EN_ROUTE: 'En Route',
+    DELIVERED: 'Delivered',
+    REJECTED: 'Rejected',
+  };
+  return m[dbStatus] || 'Pending';
+}
+function upsertCustomerInMemory(row) {
+  if (!row) return null;
+  const profile = {
+    customerId: row.customerId,
+    name: row.name,
+    company: row.company,
+    email: row.email,
+    phone: row.phone || '',
+    gstin: row.gstin || '',
+    passwordHash: row.passwordHash,
+    addresses: [],
+    paymentMethods: [],
+    createdAt: (row.createdAt instanceof Date ? row.createdAt.toISOString() : (row.createdAt || new Date().toISOString()))
+  };
+  CUSTOMERS.set(profile.customerId, profile);
+  CUSTOMERS_BY_EMAIL.set(profile.email, profile);
+  return profile;
+}
+function apiOrderFromRow(row) {
+  if (!row) return null;
+  return {
+    orderId: row.orderId,
+    customerId: row.customerId,
+    cargo: row.cargo,
+    quantityTons: row.quantityTons,
+    sourcePlant: row.sourcePlant,
+    destination: row.destination,
+    priority: toApiPriority(row.priority),
+    notes: '',
+    status: toApiStatus(row.status),
+    createdAt: (row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt),
+    estimate: row.estimateCost ? { cost: row.estimateCost, eta: row.eta ? new Date(row.eta).toISOString() : undefined } : undefined,
+    rakeId: row.rakeId || null,
+    history: Array.isArray(row.history) ? row.history : (row.history || []),
+  };
+}
+
 // Alias OTP sender for customer namespace
 app.post('/auth/customer/request-otp', async (req, res) => {
   // Reuse existing /auth/request-otp logic by forwarding
@@ -2633,11 +3189,13 @@ app.post('/auth/customer/request-otp', async (req, res) => {
 // Signup: create pending record and email OTP
 app.post('/auth/customer/signup', async (req, res) => {
   const parsed = CustomerSignupSchema.safeParse(req.body || {});
-  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+  if (!parsed.success) {
+    return res.status(422).json({ error: 'validation_error', errors: zodFieldErrors(parsed.error) });
+  }
   const { name, company, email, phone, gstin, password } = parsed.data;
   if (CUSTOMERS_BY_EMAIL.has(email)) return res.status(409).json({ error: 'Email already registered' });
   const passwordHash = await hashPassword(password);
-  SIGNUP_PENDING.set(email, { data: { name, company, email, phone, gstin, passwordHash }, createdAt: Date.now() });
+  await signupPendingSet(email, { name, company, email, phone, gstin, passwordHash });
   // send OTP using existing helper endpoint to keep behavior consistent
   try {
     await otpSet(email, String(Math.floor(100000 + Math.random()*900000)), 5*60);
@@ -2662,21 +3220,66 @@ app.post('/auth/customer/signup', async (req, res) => {
 
 // Verify signup with OTP -> create account
 app.post('/auth/customer/verify-signup', async (req, res) => {
-  const schema = z.object({ email: z.string().email(), otp: z.string().regex(/^\d{6}$/) });
+  const schema = z.object({
+    email: z.string().trim().email('Enter a valid email address'),
+    otp: z.string().regex(/^\d{6}$/, 'OTP must be a 6-digit code')
+  });
   const parsed = schema.safeParse(req.body || {});
-  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+  if (!parsed.success) return res.status(422).json({ error: 'validation_error', errors: zodFieldErrors(parsed.error) });
   const { email, otp } = parsed.data;
-  const pending = SIGNUP_PENDING.get(email);
-  if (!pending) return res.status(404).json({ error: 'No pending signup for this email' });
+  const pending = await signupPendingGet(email);
+  if (!pending) {
+    if (process.env.OTP_DEBUG === '1') console.warn('[VERIFY-SIGNUP] pending missing for', email);
+    return res.status(410).json({ error: 'signup_session_expired', message: 'Your signup session expired. Please sign up again.' });
+  }
   const stored = await otpGet(email);
-  if (!stored || stored.code !== otp || Date.now() > stored.expMs) return res.status(401).json({ error: 'Invalid OTP, please try again.' });
-  await otpDel(email);
-  SIGNUP_PENDING.delete(email);
-  // Create customer record
-  const customerId = crypto.randomUUID?.() || 'cust-' + Math.random().toString(36).slice(2);
-  const profile = { customerId, ...pending.data, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
-  CUSTOMERS.set(customerId, profile);
-  CUSTOMERS_BY_EMAIL.set(profile.email, profile);
+  const devOverride = (process.env.NODE_ENV !== 'production') && (process.env.DISABLE_EMAIL === '1' || process.env.OTP_DEV_LOG === '1');
+  if (process.env.OTP_DEBUG === '1') {
+    console.log('[VERIFY-SIGNUP]', { email, hasPending: !!pending, hasStored: !!stored, expInMs: stored ? (stored.expMs - Date.now()) : null });
+  }
+  const valid = (stored && stored.code === otp && Date.now() <= stored.expMs) || (devOverride && otp === '123456');
+  if (!valid) return res.status(401).json({ error: 'Invalid OTP, please try again.' });
+  if (stored) { try { await otpDel(email); } catch {} }
+  await signupPendingDel(email);
+  // Create customer record (DB first, fallback to in-memory)
+  let customerId = crypto.randomUUID?.() || 'cust-' + Math.random().toString(36).slice(2);
+  let profile = null;
+  try {
+    if (prisma) {
+      const created = await prisma.customer.create({
+        data: {
+          customerId,
+          name: pending.data.name,
+          company: pending.data.company,
+          email: pending.data.email,
+          phone: pending.data.phone,
+          gstin: pending.data.gstin || null,
+          passwordHash: pending.data.passwordHash,
+        }
+      });
+      profile = upsertCustomerInMemory(created);
+      customerId = profile.customerId;
+    } else {
+      profile = { customerId, ...pending.data, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
+      CUSTOMERS.set(customerId, profile);
+      CUSTOMERS_BY_EMAIL.set(profile.email, profile);
+    }
+  } catch (e) {
+    // Unique email already exists or DB failure -> attempt to load existing and fallback to memory
+    try {
+      if (prisma) {
+        const existing = await prisma.customer.findUnique({ where: { email: pending.data.email } });
+        if (existing) {
+          profile = upsertCustomerInMemory(existing);
+          customerId = profile.customerId;
+        } else {
+          profile = { customerId, ...pending.data, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
+          CUSTOMERS.set(customerId, profile);
+          CUSTOMERS_BY_EMAIL.set(profile.email, profile);
+        }
+      }
+    } catch {}
+  }
   // Issue token for convenience
   const token = jwt.sign({ sub: customerId, role: 'customer', email: profile.email }, JWT_SECRET, { expiresIn: '8h' });
   return res.json({ ok: true, customerId, token });
@@ -2684,11 +3287,21 @@ app.post('/auth/customer/verify-signup', async (req, res) => {
 
 // Customer login: password or OTP
 app.post('/auth/customer/login', async (req, res) => {
-  const schema = z.object({ email: z.string().email(), password: z.string().optional(), otp: z.string().regex(/^\d{6}$/).optional() });
+  const schema = z.object({
+    email: z.string().trim().email('Enter a valid email address'),
+    password: z.string().min(6).optional(),
+    otp: z.string().regex(/^\d{6}$/, 'OTP must be a 6-digit code').optional()
+  }).refine(d => !!d.password || !!d.otp, { message: 'Provide either password or OTP', path: ['form'] });
   const parsed = schema.safeParse(req.body || {});
-  if (!parsed.success) return res.status(400).json({ error: 'Invalid payload', issues: parsed.error.issues });
+  if (!parsed.success) return res.status(422).json({ error: 'validation_error', errors: zodFieldErrors(parsed.error) });
   const { email, password, otp } = parsed.data;
-  const customer = CUSTOMERS_BY_EMAIL.get(email);
+  let customer = CUSTOMERS_BY_EMAIL.get(email);
+  if (!customer && prisma) {
+    try {
+      const row = await prisma.customer.findUnique({ where: { email } });
+      if (row) customer = upsertCustomerInMemory(row);
+    } catch {}
+  }
   if (!customer) return res.status(404).json({ error: 'Customer not found' });
   let ok = false;
   if (password) {
@@ -2761,7 +3374,7 @@ app.post('/customer/orders', auth('customer'), async (req, res) => {
   if (estimateOnly) return res.json({ estimate: est });
 
   const orderId = crypto.randomUUID?.() || 'ord-' + Math.random().toString(36).slice(2);
-  const order = {
+  const orderBase = {
     orderId,
     customerId: req.user.sub,
     cargo,
@@ -2770,21 +3383,48 @@ app.post('/customer/orders', auth('customer'), async (req, res) => {
     destination,
     priority,
     notes: notes || '',
-    status: 'Pending', // Pending Manager Approval
+    status: 'Pending',
     createdAt: new Date().toISOString(),
     estimate: est,
     rakeId: null,
     history: [{ ts: Date.now(), status: 'Pending' }]
   };
+  let order = orderBase;
+  try {
+    if (prisma) {
+      const row = await prisma.order.create({
+        data: {
+          orderId,
+          customerId: req.user.sub,
+          cargo,
+          quantityTons,
+          sourcePlant,
+          destination,
+          priority: toDbPriority(priority),
+          status: toDbStatus('Pending'),
+          estimateCost: est?.cost ?? null,
+          eta: est?.eta ? new Date(est.eta) : null,
+          rakeId: null,
+          history: orderBase.history,
+        }
+      });
+      order = apiOrderFromRow(row) || orderBase;
+    }
+  } catch (e) { /* keep in-memory fallback */ }
   ORDERS.set(orderId, order);
-  const arr = ORDERS_BY_CUSTOMER.get(req.user.sub) || [];
-  arr.push(orderId); ORDERS_BY_CUSTOMER.set(req.user.sub, arr);
+  const arr = ORDERS_BY_CUSTOMER.get(order.customerId) || []; arr.push(orderId); ORDERS_BY_CUSTOMER.set(order.customerId, arr);
   // Notify managers
   io.emit('notification', { audience: 'manager', type: 'order_created', orderId, customerId: req.user.sub, priority });
   res.json({ ok: true, order });
 });
 
 app.get('/customer/orders', auth('customer'), async (req, res) => {
+  try {
+    if (prisma) {
+      const rows = await prisma.order.findMany({ where: { customerId: req.user.sub }, orderBy: { createdAt: 'desc' } });
+      for (const r of rows) { const o = apiOrderFromRow(r); if (o) { ORDERS.set(o.orderId, o); const arr = ORDERS_BY_CUSTOMER.get(o.customerId) || []; if (!arr.includes(o.orderId)) { arr.push(o.orderId); ORDERS_BY_CUSTOMER.set(o.customerId, arr); } } }
+    }
+  } catch {}
   const ids = ORDERS_BY_CUSTOMER.get(req.user.sub) || [];
   res.json({ orders: ids.map(id => ORDERS.get(id)).filter(Boolean) });
 });
@@ -2938,9 +3578,25 @@ app.post('/cmo/order/new', auth('cmo'), async (req, res) => {
     const password = Math.random().toString(36).slice(2, 10);
     const customerId = crypto.randomUUID?.() || 'cust-' + Math.random().toString(36).slice(2);
     const passwordHash = await hashPassword(password);
-    customerProfile = { customerId, name: company, company, email: email || `${company.toLowerCase().replace(/\s+/g,'')}@example.com`, phone: '', gstin: '', passwordHash, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
-    CUSTOMERS.set(customerId, customerProfile);
-    CUSTOMERS_BY_EMAIL.set(customerProfile.email, customerProfile);
+    const normalizedEmail = email || `${company.toLowerCase().replace(/\s+/g,'')}@example.com`;
+    try {
+      if (prisma) {
+        const created = await prisma.customer.create({ data: { customerId, name: company, company, email: normalizedEmail, phone: '', gstin: null, passwordHash } });
+        customerProfile = upsertCustomerInMemory(created);
+      } else {
+        customerProfile = { customerId, name: company, company, email: normalizedEmail, phone: '', gstin: '', passwordHash, addresses: [], paymentMethods: [], createdAt: new Date().toISOString() };
+        CUSTOMERS.set(customerId, customerProfile);
+        CUSTOMERS_BY_EMAIL.set(customerProfile.email, customerProfile);
+      }
+    } catch (e) {
+      // If email exists already, load it
+      try {
+        if (prisma) {
+          const existing = await prisma.customer.findUnique({ where: { email: normalizedEmail } });
+          if (existing) customerProfile = upsertCustomerInMemory(existing);
+        }
+      } catch {}
+    }
     generated = { customerId, email: customerProfile.email, password };
   }
 
@@ -2948,7 +3604,28 @@ app.post('/cmo/order/new', auth('cmo'), async (req, res) => {
   const orderId = crypto.randomUUID?.() || 'ord-' + Math.random().toString(36).slice(2);
   const sourcePlant = 'BKSC';
   const est = estimateOrder({ cargo: product, qtyTons: quantity, sourcePlant, destination, priority });
-  const order = { orderId, customerId: customerProfile.customerId, cargo: product, quantityTons: quantity, sourcePlant, destination, priority, notes: '', status: 'Pending', createdAt: new Date().toISOString(), estimate: est, rakeId: null, history: [{ ts: Date.now(), status: 'Pending' }] };
+  let order = { orderId, customerId: customerProfile.customerId, cargo: product, quantityTons: quantity, sourcePlant, destination, priority, notes: '', status: 'Pending', createdAt: new Date().toISOString(), estimate: est, rakeId: null, history: [{ ts: Date.now(), status: 'Pending' }] };
+  try {
+    if (prisma) {
+      const row = await prisma.order.create({
+        data: {
+          orderId,
+          customerId: customerProfile.customerId,
+          cargo: product,
+          quantityTons: quantity,
+          sourcePlant,
+          destination,
+          priority: toDbPriority(priority),
+          status: toDbStatus('Pending'),
+          estimateCost: est?.cost ?? null,
+          eta: est?.eta ? new Date(est.eta) : null,
+          rakeId: null,
+          history: order.history,
+        }
+      });
+      order = apiOrderFromRow(row) || order;
+    }
+  } catch (e) { /* fallback keeps in-memory */ }
   ORDERS.set(orderId, order);
   const arr = ORDERS_BY_CUSTOMER.get(order.customerId) || []; arr.push(orderId); ORDERS_BY_CUSTOMER.set(order.customerId, arr);
 
@@ -3253,6 +3930,15 @@ app.get('/orders/status', auth(), (req, res) => {
   const role = req.user?.role;
   if (!['manager','admin','cmo'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
   try {
+    // Hydrate from DB if available
+    (async ()=>{
+      try {
+        if (prisma) {
+          const rows = await prisma.order.findMany();
+          for (const r of rows) { const o = apiOrderFromRow(r); if (o) { ORDERS.set(o.orderId, o); const arr = ORDERS_BY_CUSTOMER.get(o.customerId) || []; if (!arr.includes(o.orderId)) { arr.push(o.orderId); ORDERS_BY_CUSTOMER.set(o.customerId, arr); } } }
+        }
+      } catch {}
+    })();
     const all = Array.from(ORDERS.values());
     // Optional filters: status, sourcePlant, destination
     const status = req.query.status ? String(req.query.status).toLowerCase() : '';
@@ -3328,10 +4014,12 @@ app.post('/manager/orders/:id/approve', auth('manager'), async (req, res) => {
   if (!o) return res.status(404).json({ error: 'Order not found' });
   o.status = 'Approved';
   o.history.push({ ts: Date.now(), status: 'Approved' });
+  try { if (prisma) await prisma.order.update({ where: { orderId: o.orderId }, data: { status: toDbStatus(o.status), history: o.history } }); } catch {}
   io.emit('notification', { audience: 'customer', email: CUSTOMERS.get(o.customerId)?.email, type: 'order_approved', orderId: o.orderId });
   // Assign rake and schedule departure sequence: Loading -> En Route
   const rakeId = `RK${String(Math.floor(Math.random()*9000)+1000)}`;
   o.rakeId = rakeId;
+  try { if (prisma) await prisma.order.update({ where: { orderId: o.orderId }, data: { rakeId } }); } catch {}
   // Seed a position path using presets from MOCK_DATA.routes or default
   const routeKey = `${o.sourcePlant}-DGR`;
   const presets = { 'BKSC-DGR': ['BKSC','Dhanbad','Asansol','Andal','DGR'], 'BKSC-ROU': ['BKSC','Purulia','ROU'], 'BKSC-BPHB': ['BKSC','Norla','BPHB'] };
@@ -3357,6 +4045,7 @@ app.post('/manager/orders/:id/reject', auth('manager'), async (req, res) => {
   if (!o) return res.status(404).json({ error: 'Order not found' });
   o.status = 'Rejected';
   o.history.push({ ts: Date.now(), status: 'Rejected' });
+  try { if (prisma) await prisma.order.update({ where: { orderId: o.orderId }, data: { status: toDbStatus(o.status), history: o.history } }); } catch {}
   io.emit('notification', { audience: 'customer', email: CUSTOMERS.get(o.customerId)?.email, type: 'order_rejected', orderId: o.orderId });
   res.json({ ok: true, order: o });
 });
@@ -3375,6 +4064,7 @@ app.post('/yard/orders/:id/status', auth('yard'), async (req, res) => {
   if (!o) return res.status(404).json({ error: 'Order not found' });
   o.status = parsed.data.status;
   o.history.push({ ts: Date.now(), status: o.status });
+  try { if (prisma) await prisma.order.update({ where: { orderId: o.orderId }, data: { status: toDbStatus(o.status), history: o.history } }); } catch {}
   io.emit('order:update', { orderId: o.orderId, status: o.status });
   const pos = o.rakeId ? MOCK_DATA.positions.find(p => p.id === o.rakeId) : null;
   if (pos) {

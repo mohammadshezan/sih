@@ -23,6 +23,12 @@ Demo users (seeded):
 ## Notes
 - This repo is a scaffold optimized for demos with progressive enhancement paths to production.
 
+### Single .env (optional)
+You can keep all environment variables in a single root file `./.env`.
+
+- Copy `.env.example` at repo root to `.env` and fill values.
+- The API (`apps/api`) and Web (`apps/web`) are configured to read the root `.env` automatically. Local overrides still work with `apps/api/.env.local` and `apps/web/.env.local`.
+
 ## Database migrations (Prisma)
 
 - Use descriptive migration names, e.g. `routes_schema`, `add_plant_relation_to_route`.
